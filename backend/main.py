@@ -6,9 +6,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from ohsheet.api.routes import artifacts, health, jobs, stages, uploads, ws
-from ohsheet.config import settings
-from ohsheet.contracts import SCHEMA_VERSION
+from backend.api.routes import artifacts, health, jobs, stages, uploads, ws
+from backend.config import settings
+from backend.contracts import SCHEMA_VERSION
 
 
 @asynccontextmanager
@@ -50,7 +50,7 @@ def run() -> None:
     """Entry point for the ``ohsheet`` console script."""
     import uvicorn
 
-    uvicorn.run("ohsheet.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)
 
 
 if __name__ == "__main__":

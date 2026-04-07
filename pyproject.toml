@@ -21,14 +21,14 @@ dev = [
 ]
 
 [project.scripts]
-ohsheet = "ohsheet.main:run"
+ohsheet = "backend.main:run"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["ohsheet"]
+packages = ["backend"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

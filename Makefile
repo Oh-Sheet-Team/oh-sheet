@@ -1,8 +1,7 @@
 # Oh Sheet — top-level orchestrator.
-# Backend lives under backend/ (FastAPI + pytest).
-# Frontend lives under frontend/ (Flutter cross-platform client).
+# Backend (Python): pyproject.toml + tests/ at the repo root, package at backend/.
+# Frontend (Flutter): everything under frontend/.
 
-BACKEND  := backend
 FRONTEND := frontend
 
 # Override on the command line, e.g.:
@@ -21,7 +20,7 @@ help:
 	@echo "Oh Sheet — make targets"
 	@echo ""
 	@echo "  make install            install backend (editable) + flutter pub get"
-	@echo "  make install-backend    pip install -e backend[dev]"
+	@echo "  make install-backend    pip install -e .[dev]"
 	@echo "  make install-frontend   flutter pub get inside frontend/"
 	@echo ""
 	@echo "  make backend            run uvicorn dev server on $(HOST):$(PORT)"
@@ -37,7 +36,7 @@ help:
 install: install-backend install-frontend
 
 install-backend:
-	pip install -e "$(BACKEND)[dev]"
+	pip install -e ".[dev]"
 
 install-frontend:
 	cd $(FRONTEND) && flutter pub get
@@ -45,7 +44,7 @@ install-frontend:
 # ---- run --------------------------------------------------------------------
 
 backend:
-	cd $(BACKEND) && uvicorn ohsheet.main:app --reload --host $(HOST) --port $(PORT)
+	uvicorn backend.main:app --reload --host $(HOST) --port $(PORT)
 
 frontend:
 	cd $(FRONTEND) && flutter run -d $(DEVICE) $(DART_DEFINE)
@@ -55,7 +54,7 @@ frontend:
 test: test-backend
 
 test-backend:
-	cd $(BACKEND) && pytest
+	pytest
 
 lint:
 	cd $(FRONTEND) && flutter analyze
@@ -63,5 +62,5 @@ lint:
 # ---- housekeeping -----------------------------------------------------------
 
 clean:
-	rm -rf $(BACKEND)/blob $(BACKEND)/.pytest_cache $(BACKEND)/**/__pycache__
+	rm -rf blob .pytest_cache backend/__pycache__ backend/**/__pycache__
 	cd $(FRONTEND) && flutter clean || true

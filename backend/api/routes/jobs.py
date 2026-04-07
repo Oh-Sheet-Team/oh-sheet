@@ -6,8 +6,8 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from ohsheet.api.deps import get_job_manager
-from ohsheet.contracts import (
+from backend.api.deps import get_job_manager
+from backend.contracts import (
     SCHEMA_VERSION,
     Difficulty,
     EngravedOutput,
@@ -18,8 +18,8 @@ from ohsheet.contracts import (
     RemoteAudioFile,
     RemoteMidiFile,
 )
-from ohsheet.jobs.events import JobEvent
-from ohsheet.jobs.manager import JobManager, JobRecord
+from backend.jobs.events import JobEvent
+from backend.jobs.manager import JobManager, JobRecord
 
 router = APIRouter()
 

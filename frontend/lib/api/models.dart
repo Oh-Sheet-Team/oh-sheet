@@ -1,4 +1,4 @@
-/// JSON models matching ohsheet/contracts.py and ohsheet/jobs/events.py.
+/// JSON models matching backend/contracts.py and backend/jobs/events.py.
 ///
 /// Kept deliberately small — only the fields the UI actually reads. The full
 /// pydantic schemas live on the server; we mirror just enough to drive the

@@ -9,15 +9,15 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from ohsheet.config import settings
-from ohsheet.jobs.manager import JobManager
-from ohsheet.jobs.runner import PipelineRunner
-from ohsheet.services.arrange import ArrangeService
-from ohsheet.services.engrave import EngraveService
-from ohsheet.services.humanize import HumanizeService
-from ohsheet.services.ingest import IngestService
-from ohsheet.services.transcribe import TranscribeService
-from ohsheet.storage.local import LocalBlobStore
+from backend.config import settings
+from backend.jobs.manager import JobManager
+from backend.jobs.runner import PipelineRunner
+from backend.services.arrange import ArrangeService
+from backend.services.engrave import EngraveService
+from backend.services.humanize import HumanizeService
+from backend.services.ingest import IngestService
+from backend.services.transcribe import TranscribeService
+from backend.storage.local import LocalBlobStore
 
 
 @lru_cache(maxsize=1)

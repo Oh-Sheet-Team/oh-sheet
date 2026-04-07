@@ -12,9 +12,9 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
-from ohsheet.api.deps import get_blob_store, get_job_manager
-from ohsheet.jobs.manager import JobManager
-from ohsheet.storage.local import LocalBlobStore
+from backend.api.deps import get_blob_store, get_job_manager
+from backend.jobs.manager import JobManager
+from backend.storage.local import LocalBlobStore
 
 router = APIRouter()
 

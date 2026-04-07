@@ -79,10 +79,9 @@ follow-up PR.
 
 ```
 oh-sheet/
-├── backend/                # FastAPI service (Python 3.11+)
-│   ├── ohsheet/            # Python package
-│   ├── tests/              # pytest suite
-│   └── pyproject.toml
+├── pyproject.toml          # Python project (FastAPI service)
+├── backend/                # Python package — importable as `backend`
+├── tests/                  # pytest suite
 ├── frontend/               # Flutter cross-platform client
 │   ├── lib/                # Dart sources
 │   └── pubspec.yaml
@@ -95,7 +94,7 @@ oh-sheet/
 ### Backend (FastAPI)
 
 ```
-backend/ohsheet/
+backend/
 ├── main.py              # FastAPI app factory + uvicorn entry
 ├── config.py            # Pydantic settings
 ├── contracts.py         # Pydantic models — mirrors api-contracts-v2.md (3.0.0)
@@ -158,7 +157,7 @@ Install both sides and start the dev servers (requires Python 3.11+ and the
 Flutter SDK on your `$PATH`):
 
 ```bash
-make install      # pip install -e backend[dev] + flutter pub get in frontend/
+make install      # pip install -e .[dev] + flutter pub get in frontend/
 make backend      # uvicorn on http://localhost:8000  (terminal 1)
 make frontend     # flutter run -d chrome             (terminal 2)
 ```
@@ -238,13 +237,13 @@ Full API spec: [TuneChat API Contracts](https://github.com/robin-raq/TuneChat/bl
 ## Tests
 
 ```bash
-make test          # → cd backend && pytest
+make test          # → pytest
 ```
 
 ## Wiring real services
 
-Each file under `backend/ohsheet/services/` has a top-of-file docstring
-marking what to replace. The plan:
+Each file under `backend/services/` has a top-of-file docstring marking
+what to replace. The plan:
 
 1. Move (or `pip install -e`) the existing pipeline modules so they're
    importable.
