@@ -13,9 +13,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
-from ohsheet.api.deps import get_blob_store
-from ohsheet.contracts import RemoteAudioFile, RemoteMidiFile
-from ohsheet.storage.local import LocalBlobStore
+from backend.api.deps import get_blob_store
+from backend.contracts import RemoteAudioFile, RemoteMidiFile
+from backend.storage.local import LocalBlobStore
 
 router = APIRouter()
 

@@ -11,8 +11,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
-from ohsheet.api.deps import get_job_manager
-from ohsheet.jobs.manager import JobManager
+from backend.api.deps import get_job_manager
+from backend.jobs.manager import JobManager
 
 router = APIRouter()
 

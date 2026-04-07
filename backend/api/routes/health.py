@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from ohsheet.contracts import SCHEMA_VERSION
+from backend.contracts import SCHEMA_VERSION
 
 router = APIRouter()
 

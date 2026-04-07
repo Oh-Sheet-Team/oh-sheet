@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from ohsheet.contracts import (
+from backend.contracts import (
     SCHEMA_VERSION,
     EngravedOutput,
     HarmonicAnalysis,
@@ -25,12 +25,12 @@ from ohsheet.contracts import (
     TempoMapEntry,
     TranscriptionResult,
 )
-from ohsheet.jobs.events import JobEvent
-from ohsheet.services.arrange import ArrangeService
-from ohsheet.services.engrave import EngraveService
-from ohsheet.services.humanize import HumanizeService
-from ohsheet.services.ingest import IngestService
-from ohsheet.services.transcribe import TranscribeService
+from backend.jobs.events import JobEvent
+from backend.services.arrange import ArrangeService
+from backend.services.engrave import EngraveService
+from backend.services.humanize import HumanizeService
+from backend.services.ingest import IngestService
+from backend.services.transcribe import TranscribeService
 
 EventCallback = Callable[[JobEvent], None]
 

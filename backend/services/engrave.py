@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import asyncio
 
-from ohsheet.contracts import (
+from backend.contracts import (
     SCHEMA_VERSION,
     EngravedOutput,
     EngravedScoreData,
     HumanizedPerformance,
     PianoScore,
 )
-from ohsheet.storage.base import BlobStore
+from backend.storage.base import BlobStore
 
 
 class EngraveService:

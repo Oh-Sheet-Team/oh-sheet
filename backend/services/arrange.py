@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
-from ohsheet.contracts import (
+from backend.contracts import (
     SCHEMA_VERSION,
     Difficulty,
     PianoScore,
