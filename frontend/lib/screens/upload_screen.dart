@@ -10,7 +10,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import 'progress_screen.dart';
 
-enum _SourceMode { audio, midi, title }
+enum _SourceMode { audio, midi, title, youtube }
 
 class UploadScreen extends StatefulWidget {
   const UploadScreen({super.key, required this.api});
@@ -24,15 +24,30 @@ class _UploadScreenState extends State<UploadScreen> {
   _SourceMode _mode = _SourceMode.audio;
   final _titleController = TextEditingController();
   final _artistController = TextEditingController();
+  final _youtubeController = TextEditingController();
 
   PlatformFile? _pickedFile;
   bool _submitting = false;
   String? _error;
 
+  static final _youtubeRegex = RegExp(
+    r'^https?://(www\.|music\.|m\.)?youtu(\.be/|be\.com/watch\?v=)([\w-]{11})',
+  );
+
+  bool get _isValidYoutubeUrl => _youtubeRegex.hasMatch(_youtubeController.text.trim());
+
+  String? get _youtubeValidationError {
+    final text = _youtubeController.text.trim();
+    if (text.isEmpty) return null;
+    if (!_isValidYoutubeUrl) return 'Enter a valid YouTube URL';
+    return null;
+  }
+
   @override
   void dispose() {
     _titleController.dispose();
     _artistController.dispose();
+    _youtubeController.dispose();
     super.dispose();
   }
 
@@ -107,6 +122,17 @@ class _UploadScreenState extends State<UploadScreen> {
                 : _artistController.text.trim(),
           );
           break;
+        case _SourceMode.youtube:
+          final url = _youtubeController.text.trim();
+          if (url.isEmpty) throw StateError('Enter a YouTube URL');
+          if (!_isValidYoutubeUrl) throw StateError('Enter a valid YouTube URL');
+          job = await widget.api.createJob(
+            title: url,
+            artist: _artistController.text.trim().isEmpty
+                ? null
+                : _artistController.text.trim(),
+          );
+          break;
       }
 
       if (!mounted) return;
@@ -124,11 +150,13 @@ class _UploadScreenState extends State<UploadScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final needsFile = _mode != _SourceMode.title;
+    final needsFile = _mode == _SourceMode.audio || _mode == _SourceMode.midi;
     final canSubmit = !_submitting &&
-        (_mode == _SourceMode.title
-            ? _titleController.text.trim().isNotEmpty
-            : _pickedFile != null);
+        switch (_mode) {
+          _SourceMode.title => _titleController.text.trim().isNotEmpty,
+          _SourceMode.youtube => _isValidYoutubeUrl,
+          _ => _pickedFile != null,
+        };
 
     return Scaffold(
       appBar: AppBar(title: const Text('Oh Sheet')),
@@ -142,6 +170,7 @@ class _UploadScreenState extends State<UploadScreen> {
                 ButtonSegment(value: _SourceMode.audio, label: Text('Audio')),
                 ButtonSegment(value: _SourceMode.midi, label: Text('MIDI')),
                 ButtonSegment(value: _SourceMode.title, label: Text('Title')),
+                ButtonSegment(value: _SourceMode.youtube, label: Text('YouTube')),
               ],
               selected: {_mode},
               onSelectionChanged: (s) => setState(() {
@@ -165,24 +194,46 @@ class _UploadScreenState extends State<UploadScreen> {
               ),
               const SizedBox(height: 16),
             ],
-            TextField(
-              controller: _titleController,
-              decoration: InputDecoration(
-                labelText: _mode == _SourceMode.title
-                    ? 'Song title (required)'
-                    : 'Title (optional)',
-                border: const OutlineInputBorder(),
+            if (_mode == _SourceMode.youtube) ...[
+              TextField(
+                controller: _youtubeController,
+                decoration: InputDecoration(
+                  labelText: 'YouTube URL',
+                  hintText: 'https://youtube.com/watch?v=...',
+                  errorText: _youtubeValidationError,
+                  prefixIcon: const Icon(Icons.play_circle_outline),
+                  border: const OutlineInputBorder(),
+                ),
+                onChanged: (_) => setState(() {}),
               ),
-              onChanged: (_) => setState(() {}),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _artistController,
-              decoration: const InputDecoration(
-                labelText: 'Artist (optional)',
-                border: OutlineInputBorder(),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _artistController,
+                decoration: const InputDecoration(
+                  labelText: 'Artist (optional)',
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
+            ] else ...[
+              TextField(
+                controller: _titleController,
+                decoration: InputDecoration(
+                  labelText: _mode == _SourceMode.title
+                      ? 'Song title (required)'
+                      : 'Title (optional)',
+                  border: const OutlineInputBorder(),
+                ),
+                onChanged: (_) => setState(() {}),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _artistController,
+                decoration: const InputDecoration(
+                  labelText: 'Artist (optional)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
             const SizedBox(height: 24),
             FilledButton.icon(
               onPressed: canSubmit ? _submit : null,
