@@ -13,7 +13,7 @@ export default function UploadZone({ onFileSelected, uploading, error }: UploadZ
 
   const pickFile = async () => {
     const result = await DocumentPicker.getDocumentAsync({
-      type: Platform.OS === "web" ? "audio/midi" : "*/*",
+      type: Platform.OS === "web" ? ["audio/midi", "audio/mpeg", "audio/wav"] : "*/*",
       copyToCacheDirectory: true,
     });
 
@@ -46,8 +46,8 @@ export default function UploadZone({ onFileSelected, uploading, error }: UploadZ
         ) : (
           <>
             <Text style={styles.icon}>&#8682;</Text>
-            <Text style={styles.label}>Tap to select a MIDI file</Text>
-            <Text style={styles.hint}>.mid or .midi</Text>
+            <Text style={styles.label}>Tap to select a file</Text>
+            <Text style={styles.hint}>.mp3, .wav, .mid, .midi</Text>
           </>
         )}
       </Pressable>

@@ -1,4 +1,4 @@
-import { uploadMidi, submitJob, listJobs, getJob } from "../lib/api";
+import { uploadMidi, uploadAudio, submitJob, listJobs, getJob } from "../lib/api";
 
 const mockFetch = jest.fn();
 global.fetch = mockFetch;
@@ -40,6 +40,31 @@ describe("API client", () => {
 
       const file = new File(["data"], "bad.txt", { type: "text/plain" });
       await expect(uploadMidi(file)).rejects.toThrow();
+    });
+  });
+
+  describe("uploadAudio", () => {
+    it("POSTs file to /v1/uploads/audio and returns remote ref", async () => {
+      const audioRef = {
+        uri: "file://blob/uploads/audio/def456.mp3",
+        format: "mp3",
+        sample_rate: 44100,
+        duration_sec: 180.5,
+        channels: 2,
+        content_hash: "def456",
+      };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(audioRef),
+      });
+
+      const file = new File(["audio-data"], "song.mp3", { type: "audio/mpeg" });
+      const result = await uploadAudio(file);
+
+      const [url, opts] = mockFetch.mock.calls[0];
+      expect(url).toBe("http://localhost:8000/v1/uploads/audio");
+      expect(opts.method).toBe("POST");
+      expect(result.format).toBe("mp3");
     });
   });
 

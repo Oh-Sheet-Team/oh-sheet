@@ -9,7 +9,7 @@ import {
 } from "react-native";
 import UploadZone from "../components/UploadZone";
 import JobCard from "../components/JobCard";
-import { uploadMidi, submitJob, listJobs, type JobSummary } from "../lib/api";
+import { uploadMidi, uploadAudio, submitJob, listJobs, type JobSummary } from "../lib/api";
 
 export default function HomeScreen() {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
@@ -58,12 +58,17 @@ export default function HomeScreen() {
         fileObj = new File([blob], file.name, { type: "audio/midi" });
       }
 
-      // Step 1: Upload MIDI file
-      const midiRef = await uploadMidi(fileObj);
+      // Step 1: Upload file (route by extension)
+      const isAudio = /\.(mp3|wav|flac|m4a)$/i.test(file.name);
+      const title = file.name.replace(/\.(mid|midi|mp3|wav|flac|m4a)$/i, "");
 
-      // Step 2: Submit pipeline job
-      const title = file.name.replace(/\.(mid|midi)$/i, "");
-      await submitJob({ midi: midiRef, title });
+      if (isAudio) {
+        const audioRef = await uploadAudio(fileObj);
+        await submitJob({ audio: audioRef, title });
+      } else {
+        const midiRef = await uploadMidi(fileObj);
+        await submitJob({ midi: midiRef, title });
+      }
 
       // Step 3: Refresh job list
       await fetchJobs();
@@ -88,7 +93,7 @@ export default function HomeScreen() {
           Oh <Text style={styles.accent}>Sheet</Text>
         </Text>
         <Text style={styles.heroSubtitle}>
-          Upload a MIDI file and we'll turn it into piano sheet music.
+          Upload an MP3 or MIDI file and we'll turn it into piano sheet music.
           Transcribed, arranged, humanized, and engraved — automatically.
         </Text>
       </View>
@@ -113,7 +118,7 @@ export default function HomeScreen() {
       {jobs.length === 0 && !uploading && (
         <View style={styles.empty}>
           <Text style={styles.emptyText}>
-            No jobs yet. Upload a MIDI file to get started.
+            No jobs yet. Upload a file to get started.
           </Text>
         </View>
       )}

@@ -52,6 +52,16 @@ export async function uploadMidi(file: File): Promise<RemoteMidiFile> {
   return handleResponse<RemoteMidiFile>(res);
 }
 
+export async function uploadAudio(file: File): Promise<RemoteAudioFile> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${API_BASE}/v1/uploads/audio`, {
+    method: "POST",
+    body: formData,
+  });
+  return handleResponse<RemoteAudioFile>(res);
+}
+
 export async function submitJob(params: SubmitJobParams): Promise<JobSummary> {
   const res = await fetch(`${API_BASE}/v1/jobs`, {
     method: "POST",
