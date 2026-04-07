@@ -107,13 +107,14 @@ class ResultScreen extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Container(
-              height: 100,
+              height: 250,
               width: double.infinity,
               decoration: BoxDecoration(
                 color: Colors.white,
                 border: Border.all(color: Colors.grey.shade300),
                 borderRadius: BorderRadius.circular(12),
               ),
+              clipBehavior: Clip.antiAlias,
               child: MidiPlayerWidget(midiUrl: api.artifactUrl(job.jobId, 'midi')),
             ),
             const SizedBox(height: 24),
