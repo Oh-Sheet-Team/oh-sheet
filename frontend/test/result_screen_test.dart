@@ -52,7 +52,7 @@ void main() {
 
     testWidgets('shows PDF download button', (tester) async {
       await tester.pumpWidget(_app());
-      expect(find.textContaining('PDF'), findsOneWidget);
+      expect(find.text('PDF'), findsOneWidget);
     });
 
     testWidgets('shows MIDI download button', (tester) async {

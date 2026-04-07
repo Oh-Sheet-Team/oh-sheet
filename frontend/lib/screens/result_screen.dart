@@ -8,6 +8,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import '../theme.dart';
 import '../widgets/midi_player.dart';
+import '../widgets/pdf_preview.dart';
 
 class ResultScreen extends StatelessWidget {
   const ResultScreen({super.key, required this.api, required this.job});
@@ -62,6 +63,34 @@ class ResultScreen extends StatelessWidget {
                 ),
               ),
             ],
+            const SizedBox(height: 24),
+
+            // Sheet music preview section
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Sheet Music',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: OhSheetColors.darkText,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              height: 500,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border.all(color: Colors.grey.shade300),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: PdfPreviewWidget(pdfUrl: api.artifactUrl(job.jobId, 'pdf')),
+              ),
+            ),
             const SizedBox(height: 24),
 
             // MIDI player section
