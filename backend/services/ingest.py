@@ -97,6 +97,7 @@ def _download_youtube_sync(url: str, blob_store) -> RemoteAudioFile:
             "outtmpl": output_template,
             "quiet": True,
             "no_warnings": True,
+            "noplaylist": True,
             "socket_timeout": 30,
         }
 

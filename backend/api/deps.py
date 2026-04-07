@@ -29,7 +29,7 @@ def get_blob_store() -> LocalBlobStore:
 def get_runner() -> PipelineRunner:
     blob = get_blob_store()
     return PipelineRunner(
-        ingest=IngestService(),
+        ingest=IngestService(blob_store=blob),
         transcribe=TranscribeService(),
         arrange=ArrangeService(),
         humanize=HumanizeService(),
