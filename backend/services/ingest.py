@@ -28,6 +28,112 @@ from backend.contracts import (
 log = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# YouTube URL helpers — stubs, implementation TBD
+# ---------------------------------------------------------------------------
+
+_YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+
+
+def is_youtube_url(value: str | None) -> bool:
+    """Return True if *value* looks like a YouTube video URL."""
+    if not value:
+        return False
+    return extract_youtube_id(value) is not None
+
+
+def extract_youtube_id(url: str) -> str | None:
+    """Extract the 11-character video ID from a YouTube URL, or None."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    host = (parsed.hostname or "").lower()
+    if host not in _YOUTUBE_HOSTS:
+        return None
+    # youtu.be/<id>
+    if host == "youtu.be":
+        video_id = parsed.path.lstrip("/").split("/")[0]
+    else:
+        # youtube.com/watch?v=<id>
+        from urllib.parse import parse_qs
+        video_id = parse_qs(parsed.query).get("v", [None])[0]
+    if video_id and len(video_id) == 11:
+        return video_id
+    return None
+
+
+def _download_youtube_sync(url: str, blob_store) -> RemoteAudioFile:
+    """Download audio from a YouTube URL via yt-dlp, store in blob_store.
+
+    Returns a RemoteAudioFile pointing to the stored WAV.
+    This is called via asyncio.to_thread() so it can block.
+    """
+    import hashlib
+    import tempfile
+
+    try:
+        import yt_dlp
+    except ImportError:
+        raise RuntimeError(
+            "yt-dlp is required for YouTube downloads. "
+            "Install with: pip install ohsheet[youtube]"
+        )
+
+    video_id = extract_youtube_id(url)
+    if video_id is None:
+        raise ValueError(f"Could not extract video ID from URL: {url}")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        output_template = str(Path(tmp_dir) / "%(id)s.%(ext)s")
+
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "wav",
+                "preferredquality": "0",
+            }],
+            "outtmpl": output_template,
+            "quiet": True,
+            "no_warnings": True,
+            "socket_timeout": 30,
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+        except Exception as exc:
+            raise RuntimeError(f"yt-dlp download failed for {url}: {exc}") from exc
+
+        # Find the downloaded WAV file
+        wav_path = Path(tmp_dir) / f"{info['id']}.wav"
+        if not wav_path.exists():
+            # yt-dlp may use a different naming — find any .wav in the dir
+            wav_files = list(Path(tmp_dir).glob("*.wav"))
+            if not wav_files:
+                raise RuntimeError(f"No WAV file produced by yt-dlp for {url}")
+            wav_path = wav_files[0]
+
+        audio_bytes = wav_path.read_bytes()
+        content_hash = hashlib.sha256(audio_bytes).hexdigest()
+
+        blob_key = f"youtube/{video_id}.wav"
+        uri = blob_store.put_bytes(blob_key, audio_bytes)
+
+        duration = float(info.get("duration", 0))
+        sample_rate = int(info.get("asr", 44100) or 44100)
+
+        return RemoteAudioFile(
+            uri=uri,
+            format="wav",
+            sample_rate=sample_rate,
+            duration_sec=duration,
+            channels=2,
+            content_hash=content_hash,
+        )
+
+
 def _file_path(uri: str) -> Path | None:
     """Return a local Path for ``file://`` URIs, or None for anything else."""
     parsed = urlparse(uri)
@@ -86,9 +192,25 @@ def _probe_midi_sync(midi: RemoteMidiFile) -> RemoteMidiFile:
 class IngestService:
     name = "ingest"
 
+    def __init__(self, blob_store=None):
+        self._blob_store = blob_store
+
     async def run(self, payload: InputBundle) -> InputBundle:
         audio = payload.audio
         midi = payload.midi
+
+        # YouTube URL detection: if no audio/midi and title is a YouTube URL,
+        # download the audio and attach it to the bundle.
+        if (
+            audio is None
+            and midi is None
+            and payload.metadata.source == "title_lookup"
+            and is_youtube_url(payload.metadata.title)
+        ):
+            audio = await asyncio.to_thread(
+                _download_youtube_sync, payload.metadata.title, self._blob_store,
+            )
+
         if audio is not None:
             audio = await asyncio.to_thread(_probe_audio_sync, audio)
         if midi is not None:
