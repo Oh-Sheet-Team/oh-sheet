@@ -2,7 +2,6 @@
 name = "ohsheet"
 version = "0.1.0"
 description = "FastAPI backend for the Song-to-Humanized-Piano-Sheet-Music pipeline"
-readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
 authors = [{ name = "Ross" }]

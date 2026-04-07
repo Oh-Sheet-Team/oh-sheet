@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from ohsheet.api.routes import health, jobs, stages, uploads, ws
+from ohsheet.api.routes import artifacts, health, jobs, stages, uploads, ws
 from ohsheet.config import settings
 from ohsheet.contracts import SCHEMA_VERSION
 
@@ -36,6 +36,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router, prefix="/v1", tags=["health"])
     app.include_router(uploads.router, prefix="/v1", tags=["uploads"])
     app.include_router(jobs.router, prefix="/v1", tags=["jobs"])
+    app.include_router(artifacts.router, prefix="/v1", tags=["artifacts"])
     app.include_router(stages.router, prefix="/v1", tags=["stages"])
     app.include_router(ws.router, prefix="/v1", tags=["websocket"])
 
