@@ -23,4 +23,5 @@ LINEAR_TICKETS.md
 STUDY_GUIDE.md
 PRD.md
 coverage.xml
+node_modules/
 .openskills/skill-log-architectural-decisions/SKILL.md

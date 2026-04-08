@@ -14,7 +14,7 @@ PORT         ?= 8000
 
 DART_DEFINE := $(if $(API_BASE_URL),--dart-define=API_BASE_URL=$(API_BASE_URL),)
 
-.PHONY: help install install-backend install-basic-pitch install-frontend backend frontend test test-backend lint typecheck clean
+.PHONY: help install install-backend install-basic-pitch install-frontend backend frontend test test-backend test-e2e lint typecheck clean
 
 help:
 	@echo "Oh Sheet — make targets"
@@ -65,6 +65,9 @@ test: test-backend
 
 test-backend:
 	pytest
+
+test-e2e:
+	cd e2e && npx playwright test
 
 lint:
 	ruff check backend tests
