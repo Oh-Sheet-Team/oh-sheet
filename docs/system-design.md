@@ -1,5 +1,10 @@
 Here is the updated High-Level System Design (HLD) document. It now maps the complete end-to-end flow from your Miro architecture, fully integrating the **Humanizer Service** (Stage 4), the **Engraver/Renderer** (Stage 5), and the post-pipeline integration for **Tunechat**. 
 
+> **Note:** This document describes the aspirational target architecture.
+> The current implementation uses **local filesystem blob storage** (not S3),
+> **in-memory job state** (not PostgreSQL), and has not yet integrated with
+> the Tunechat API. See `CLAUDE.md` for the as-built architecture.
+
 ***
 
 # System Design: Oh Sheet! (Complete MVP Architecture)

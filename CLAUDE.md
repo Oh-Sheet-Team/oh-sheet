@@ -32,11 +32,11 @@ pytest tests/test_uploads.py::test_upload_audio -v
 
 ### Backend (Python 3.10+, FastAPI)
 
-**Pipeline stages** (`backend/services/`): Each stage is a stateless worker that receives an `OrchestratorCommand` envelope and returns a `WorkerResponse`. Most stages are stubs returning shape-correct contracts; transcribe has a real Basic Pitch implementation.
+**Pipeline stages** (`backend/workers/`, `svc-decomposer/`, `svc-assembler/`): `PipelineRunner` dispatches each stage as a Celery task via Redis. Monolith workers (ingest, humanize, engrave) live in `backend/workers/`; decomposer and assembler are separate services with their own Celery apps. Most stages are stubs returning shape-correct contracts; transcribe has a real Basic Pitch implementation.
 
-**Data contracts** (`backend/contracts.py`): Schema v3.0.0 Pydantic models define all inter-stage data. Key types: `InputBundle`, `TranscriptionResult`, `PianoScore`, `EngravedOutput`. Pipeline variants (`full`, `audio_upload`, `midi_upload`, `sheet_only`) determine which stages run.
+**Data contracts** (`shared/shared/contracts.py`, re-exported by `backend/contracts.py`): Schema v3.0.0 Pydantic models define all inter-stage data. Key types: `InputBundle`, `TranscriptionResult`, `PianoScore`, `EngravedOutput`. Pipeline variants (`full`, `audio_upload`, `midi_upload`, `sheet_only`) determine which stages run.
 
-**Job system** (`backend/jobs/`): `JobManager` tracks in-memory job state and fans out `JobEvent`s to WebSocket subscribers via asyncio Queues. `PipelineRunner` walks the execution plan from `PipelineConfig`.
+**Job system** (`backend/jobs/`): `JobManager` tracks in-memory job state and fans out `JobEvent`s to WebSocket subscribers via asyncio Queues. `PipelineRunner` walks the execution plan from `PipelineConfig`, dispatching each stage via `celery_app.tasks[name].apply_async()` (or `send_task()` for remote-only workers).
 
 **Storage** (`backend/storage/`): Claim-Check pattern — heavy files go to a blob store (local filesystem, S3 future), URIs passed between services.
 
