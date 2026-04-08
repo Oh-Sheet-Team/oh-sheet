@@ -62,7 +62,7 @@ def _render_midi_bytes(perf: HumanizedPerformance) -> bytes:
     try:
         import pretty_midi  # noqa: PLC0415 — optional dep
     except ImportError:
-        log.debug("pretty_midi unavailable; emitting stub MIDI")
+        log.warning("pretty_midi not installed — MIDI output will be a stub. Install with: pip install pretty_midi")
         return _STUB_MIDI
 
     tempo_map = perf.score.metadata.tempo_map
@@ -156,7 +156,7 @@ def _render_musicxml_bytes(
     try:
         import music21  # noqa: PLC0415 — optional heavy dep
     except ImportError:
-        log.debug("music21 unavailable; emitting minimal MusicXML")
+        log.warning("music21 not installed — MusicXML output will be a minimal stub. Install with: pip install music21")
         return _minimal_musicxml(score, title, composer)
 
     try:
@@ -311,6 +311,7 @@ def _render_pdf_bytes(musicxml_bytes: bytes) -> bytes:
     if not (shutil.which("musescore4") or shutil.which("musescore3")
             or shutil.which("mscore") or shutil.which("MuseScore4")
             or (shutil.which("musicxml2ly") and shutil.which("lilypond"))):
+        log.warning("No PDF renderer found — install LilyPond or MuseScore for real PDF output")
         return _STUB_PDF
 
     with tempfile.TemporaryDirectory() as tmpdir:
