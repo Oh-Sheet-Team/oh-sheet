@@ -56,8 +56,8 @@ jobs:
             --cpu ${{ vars.CLOUD_RUN_CPU || '1' }} \
             --min-instances 0 \
             --max-instances 3 \
-            --http-startup-probe /v1/health \
-            --set-env-vars "OHSHEET_CORS_ORIGINS=*"
+            --startup-probe=httpGet.path=/v1/health \
+            --set-env-vars 'OHSHEET_CORS_ORIGINS=["*"]'
 
       - name: Show deployment URL
         run: |
