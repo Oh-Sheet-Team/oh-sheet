@@ -9,9 +9,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-arrangement = [
-    "ohsheet @ file:..",
-]
 dev = [
     "pytest>=8.0",
 ]

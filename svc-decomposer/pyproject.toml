@@ -9,10 +9,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The real transcription deps -- not needed for stub mode
-transcription = [
-    "ohsheet @ file:..",
-]
 dev = [
     "pytest>=8.0",
 ]

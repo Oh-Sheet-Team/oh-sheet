@@ -29,17 +29,16 @@ from backend.workers.celery_app import celery_app as _celery_app
 
 @_celery_app.task(name="decomposer.run")
 def _decomposer_run(job_id: str, payload_uri: str) -> str:
+    from decomposer.tasks import _stub_transcription
+
     from shared.contracts import InputBundle
     from shared.storage.local import LocalBlobStore
 
-    from backend.services.transcribe import TranscribeService
-
     blob = LocalBlobStore(settings.blob_root)
     raw = blob.get_json(payload_uri)
-    bundle = InputBundle.model_validate(raw)
+    InputBundle.model_validate(raw)
 
-    service = TranscribeService(blob_store=blob)
-    result = asyncio.run(service.run(bundle, job_id=job_id))
+    result = _stub_transcription()
 
     output_uri = blob.put_json(
         f"jobs/{job_id}/decomposer/output.json",
@@ -50,17 +49,16 @@ def _decomposer_run(job_id: str, payload_uri: str) -> str:
 
 @_celery_app.task(name="assembler.run")
 def _assembler_run(job_id: str, payload_uri: str) -> str:
+    from assembler.tasks import _stub_arrangement
+
     from shared.contracts import TranscriptionResult
     from shared.storage.local import LocalBlobStore
-
-    from backend.services.arrange import ArrangeService
 
     blob = LocalBlobStore(settings.blob_root)
     raw = blob.get_json(payload_uri)
     txr = TranscriptionResult.model_validate(raw)
 
-    service = ArrangeService()
-    result = asyncio.run(service.run(txr))
+    result = _stub_arrangement(txr)
 
     output_uri = blob.put_json(
         f"jobs/{job_id}/assembler/output.json",

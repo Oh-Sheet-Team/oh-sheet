@@ -10,14 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
 COPY shared/ /app/shared/
 RUN pip install --no-cache-dir /app/shared
 
-# Install the main backend package (needed for TranscribeService stub)
-COPY pyproject.toml /app/pyproject.toml
-COPY backend/ /app/backend/
-RUN pip install --no-cache-dir /app
-
 # Install decomposer package
 COPY svc-decomposer/ /app/svc-decomposer/
-RUN pip install --no-cache-dir --no-deps /app/svc-decomposer
+RUN pip install --no-cache-dir /app/svc-decomposer
 
 ENV OHSHEET_BLOB_ROOT=/app/blob
 
