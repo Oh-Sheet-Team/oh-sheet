@@ -57,7 +57,7 @@ jobs:
             --min-instances 0 \
             --max-instances 3 \
             --startup-probe=httpGet.path=/v1/health \
-            --set-env-vars "OHSHEET_CORS_ORIGINS=*"
+            --set-env-vars 'OHSHEET_CORS_ORIGINS=["*"]'
 
       - name: Show deployment URL
         run: |
