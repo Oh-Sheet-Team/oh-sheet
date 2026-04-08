@@ -1,8 +1,8 @@
-# ScoreStream MVP PRD + Technical Architecture
+# Oh Sheet MVP PRD + Technical Architecture
 
 ## Executive Summary
 
-ScoreStream converts a YouTube link or uploaded audio file into piano sheet music and stores the result in a community library.
+Oh Sheet converts a YouTube link or uploaded audio file into piano sheet music and stores the result in a community library.
 
 The MVP focuses on three outcomes:
 - Users can submit audio and get downloadable `PDF` + `MusicXML`.
