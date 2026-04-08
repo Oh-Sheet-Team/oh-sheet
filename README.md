@@ -123,6 +123,24 @@ backend/
         └── ws.py        # WS  /v1/jobs/{id}/ws — live event stream
 ```
 
+#### Transcription tempo_map
+
+Basic Pitch is a polyphonic pitch tracker and does **not** estimate
+tempo, so out of the box the transcribe stage would emit a single global
+BPM anchor at `t=0` and every downstream `sec_to_beat` call would drift
+against the real pulse of the recording. To fix that,
+`backend/services/audio_timing.py` runs `librosa.beat.beat_track` on the
+waveform after inference and builds a piecewise `TempoMapEntry` list —
+one anchor per detected beat, with each segment's BPM derived from the
+inter-beat interval. `TranscribeService` injects this map into
+`HarmonicAnalysis.tempo_map` and appends a `tempo_map from audio beat
+tracking (librosa)` warning so the override is visible in the quality
+signal. When `librosa` is missing, beat tracking fails, or the audio is
+too short (< 0.5 s), the service falls back silently to the
+single-anchor map derived from `pretty_midi.estimate_tempo`. MIDI-upload
+jobs are unaffected — they already build a multi-point map from
+`pretty_midi` tempo changes.
+
 ### Frontend (Flutter)
 
 ```

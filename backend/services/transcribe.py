@@ -40,6 +40,7 @@ from backend.contracts import (
     TempoMapEntry,
     TranscriptionResult,
 )
+from backend.services.audio_timing import tempo_map_from_audio_path
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +57,8 @@ def _pretty_midi_to_transcription_result(
     note_events: list[tuple[float, float, int, float, Any]],
     model_output: dict[str, Any],
     default_bpm: float = 120.0,
+    *,
+    tempo_map_override: list[TempoMapEntry] | None = None,
 ) -> TranscriptionResult:
     """Convert Basic Pitch's output into our pydantic TranscriptionResult.
 
@@ -64,6 +67,11 @@ def _pretty_midi_to_transcription_result(
     Per-note confidence comes straight from the model's sigmoid output
     (note_events[i][3] is the amplitude at the onset frame, which is the
     same scalar basic_pitch uses to derive the MIDI velocity).
+
+    If ``tempo_map_override`` is provided (e.g. from waveform beat
+    tracking), it replaces the single-anchor map we'd otherwise build
+    from ``pm.estimate_tempo`` so arrange's ``sec_to_beat`` aligns
+    quantization to the real pulse of the recording.
     """
     import numpy as np  # noqa: PLC0415 — heavy/optional dep
 
@@ -109,20 +117,25 @@ def _pretty_midi_to_transcription_result(
             )
         )
 
-    # Basic Pitch does not estimate tempo. Use pretty_midi's estimate if it
-    # looks sane, otherwise fall back to the default.
-    bpm = default_bpm
-    try:
-        estimated = float(pm.estimate_tempo())
-        if 40.0 <= estimated <= 240.0:
-            bpm = estimated
-    except Exception:  # noqa: BLE001 — estimate_tempo can raise on sparse input
-        pass
+    # Tempo map — prefer the waveform-derived beat grid when available.
+    # Basic Pitch itself does not estimate tempo, so without the override
+    # we fall back to pretty_midi's estimate (single global BPM).
+    if tempo_map_override:
+        tempo_map = tempo_map_override
+    else:
+        bpm = default_bpm
+        try:
+            estimated = float(pm.estimate_tempo())
+            if 40.0 <= estimated <= 240.0:
+                bpm = estimated
+        except Exception:  # noqa: BLE001 — estimate_tempo can raise on sparse input
+            pass
+        tempo_map = [TempoMapEntry(time_sec=0.0, beat=0.0, bpm=bpm)]
 
     analysis = HarmonicAnalysis(
         key="C:major",
         time_signature=(4, 4),
-        tempo_map=[TempoMapEntry(time_sec=0.0, beat=0.0, bpm=bpm)],
+        tempo_map=tempo_map,
         chords=[],
         sections=[],
     )
@@ -131,6 +144,8 @@ def _pretty_midi_to_transcription_result(
     warnings: list[str] = [
         "Basic Pitch baseline (polyphonic pitch tracker, no instrument separation)"
     ]
+    if tempo_map_override:
+        warnings.append("tempo_map from audio beat tracking (librosa)")
     if total_notes < 20:
         warnings.append(f"Low note count ({total_notes}) — possible quality issue")
     quality = QualitySignal(
@@ -215,7 +230,14 @@ def _run_basic_pitch_sync(audio_path: Path) -> TranscriptionResult:
         frame_threshold=settings.basic_pitch_frame_threshold,
         minimum_note_length=settings.basic_pitch_minimum_note_length_ms,
     )
-    return _pretty_midi_to_transcription_result(midi_data, note_events, model_output)
+    # Waveform-derived tempo_map (best-effort; None on failure).
+    audio_tempo_map = tempo_map_from_audio_path(audio_path)
+    return _pretty_midi_to_transcription_result(
+        midi_data,
+        note_events,
+        model_output,
+        tempo_map_override=audio_tempo_map,
+    )
 
 
 class TranscribeService:
