@@ -1,10 +1,24 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from shared.contracts import (
+    SCHEMA_VERSION,
+    HarmonicAnalysis,
+    InputBundle,
+    InstrumentRole,
+    MidiTrack,
+    Note,
+    PianoScore,
+    QualitySignal,
+    ScoreMetadata,
+    ScoreNote,
+    TempoMapEntry,
+    TranscriptionResult,
+)
+from shared.storage.local import LocalBlobStore
 
 import backend.workers.engrave  # noqa: F401
 import backend.workers.humanize  # noqa: F401
@@ -23,22 +37,43 @@ from backend.workers.celery_app import celery_app as _celery_app
 # testing we need the task functions registered on the single app instance
 # the PipelineRunner dispatches through.
 #
-# We wrap the service logic rather than importing the external task functions
-# directly, because the external tasks construct their own LocalBlobStore
-# from a module-level _BLOB_ROOT that ignores the test's tmp_path.
+# Stubs are inlined here (not imported from svc-decomposer/svc-assembler)
+# because CI only installs the backend and shared packages.
+
 
 @_celery_app.task(name="decomposer.run")
 def _decomposer_run(job_id: str, payload_uri: str) -> str:
-    from decomposer.tasks import _stub_transcription
-
-    from shared.contracts import InputBundle
-    from shared.storage.local import LocalBlobStore
-
     blob = LocalBlobStore(settings.blob_root)
     raw = blob.get_json(payload_uri)
     InputBundle.model_validate(raw)
 
-    result = _stub_transcription()
+    result = TranscriptionResult(
+        schema_version=SCHEMA_VERSION,
+        midi_tracks=[
+            MidiTrack(
+                notes=[
+                    Note(pitch=60, onset_sec=0.0, offset_sec=0.5, velocity=80),
+                    Note(pitch=64, onset_sec=0.5, offset_sec=1.0, velocity=80),
+                    Note(pitch=67, onset_sec=1.0, offset_sec=1.5, velocity=80),
+                    Note(pitch=72, onset_sec=1.5, offset_sec=2.0, velocity=80),
+                ],
+                instrument=InstrumentRole.MELODY,
+                program=None,
+                confidence=0.7,
+            ),
+        ],
+        analysis=HarmonicAnalysis(
+            key="C:major",
+            time_signature=(4, 4),
+            tempo_map=[TempoMapEntry(time_sec=0.0, beat=0.0, bpm=120.0)],
+            chords=[],
+            sections=[],
+        ),
+        quality=QualitySignal(
+            overall_confidence=0.3,
+            warnings=["conftest stub — real transcription not wired"],
+        ),
+    )
 
     output_uri = blob.put_json(
         f"jobs/{job_id}/decomposer/output.json",
@@ -49,16 +84,34 @@ def _decomposer_run(job_id: str, payload_uri: str) -> str:
 
 @_celery_app.task(name="assembler.run")
 def _assembler_run(job_id: str, payload_uri: str) -> str:
-    from assembler.tasks import _stub_arrangement
-
-    from shared.contracts import TranscriptionResult
-    from shared.storage.local import LocalBlobStore
-
     blob = LocalBlobStore(settings.blob_root)
     raw = blob.get_json(payload_uri)
     txr = TranscriptionResult.model_validate(raw)
 
-    result = _stub_arrangement(txr)
+    tempo_map = txr.analysis.tempo_map or [
+        TempoMapEntry(time_sec=0.0, beat=0.0, bpm=120.0)
+    ]
+    result = PianoScore(
+        schema_version=SCHEMA_VERSION,
+        right_hand=[
+            ScoreNote(
+                id="rh-0001", pitch=60, onset_beat=0.0,
+                duration_beat=1.0, velocity=80, voice=1,
+            ),
+        ],
+        left_hand=[
+            ScoreNote(
+                id="lh-0001", pitch=48, onset_beat=0.0,
+                duration_beat=1.0, velocity=70, voice=1,
+            ),
+        ],
+        metadata=ScoreMetadata(
+            key=txr.analysis.key,
+            time_signature=txr.analysis.time_signature,
+            tempo_map=tempo_map,
+            difficulty="intermediate",
+        ),
+    )
 
     output_uri = blob.put_json(
         f"jobs/{job_id}/assembler/output.json",
