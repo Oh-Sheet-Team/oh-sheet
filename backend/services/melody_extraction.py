@@ -351,6 +351,8 @@ def _split_notes_by_path_agreement(
     if not events:
         return [], []
 
+    import numpy as np  # noqa: PLC0415
+
     n_frames = len(path)
     in_voice: list[NoteEvent] = []
     out_of_voice: list[NoteEvent] = []
@@ -369,14 +371,10 @@ def _split_notes_by_path_agreement(
             continue
 
         target_bin = midi_to_bin(pitch)
-        match = 0
         total = f1 - f0
-        for f in range(f0, f1):
-            pb = int(path[f])
-            if pb < 0:
-                continue
-            if abs(pb - target_bin) <= tol_bins:
-                match += 1
+        segment = path[f0:f1]
+        voiced = segment >= 0
+        match = int(np.sum(voiced & (np.abs(segment - target_bin) <= tol_bins)))
 
         if total > 0 and (match / total) >= match_fraction:
             in_voice.append(ev)

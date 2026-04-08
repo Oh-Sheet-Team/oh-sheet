@@ -337,7 +337,7 @@ def _run_basic_pitch_sync(audio_path: Path) -> tuple[TranscriptionResult, bytes 
         ghost_max_duration_sec=settings.cleanup_ghost_max_duration_sec,
         ghost_amp_median_scale=settings.cleanup_ghost_amp_median_scale,
     )
-    if cleanup_stats.output_count != cleanup_stats.input_count or cleanup_stats.merged:
+    if cleanup_stats.output_count != cleanup_stats.input_count:
         try:
             midi_data = note_events_to_midi(cleaned_events)
         except Exception as exc:  # noqa: BLE001 — never let cleanup sink the job
