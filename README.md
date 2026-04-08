@@ -169,6 +169,7 @@ make frontend     # flutter run -d chrome             (terminal 2)
 ```bash
 make frontend DEVICE=ios                                  # run on a different device
 make frontend API_BASE_URL=http://192.168.1.42:8000       # point at a non-localhost backend
+make frontend FLUTTER=$HOME/flutter/bin/flutter           # use a specific Flutter binary
 make backend  PORT=9000                                   # bind a different port
 ```
 
