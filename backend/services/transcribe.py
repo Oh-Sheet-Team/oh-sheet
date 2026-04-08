@@ -41,6 +41,15 @@ from backend.contracts import (
     TranscriptionResult,
 )
 from backend.services.audio_timing import tempo_map_from_audio_path
+from backend.services.melody_extraction import (
+    MelodyExtractionStats,
+    extract_melody,
+)
+from backend.services.transcription_cleanup import (
+    CleanupStats,
+    NoteEvent,
+    cleanup_note_events,
+)
 
 log = logging.getLogger(__name__)
 
@@ -52,21 +61,46 @@ log = logging.getLogger(__name__)
 _BP_MODEL: Any = None
 
 
+def _event_to_note(event: NoteEvent) -> Note:
+    """Convert a Basic Pitch ``note_events`` tuple to a contract ``Note``.
+
+    Basic Pitch's own velocity formula is ``int(round(127 * amplitude))``
+    (see ``basic_pitch.note_creation.note_events_to_midi``); we replicate
+    it here so the contract notes match what the rebuilt pretty_midi
+    would contain, without needing to cross-reference ``pm.instruments``.
+    """
+    start, end, pitch, amplitude, _bends = event
+    velocity = int(round(127 * float(amplitude)))
+    velocity = max(1, min(127, velocity))
+    return Note(
+        pitch=int(pitch),
+        onset_sec=float(start),
+        offset_sec=float(end),
+        velocity=velocity,
+    )
+
+
 def _pretty_midi_to_transcription_result(
     pm: Any,
-    note_events: list[tuple[float, float, int, float, Any]],
+    events_by_role: dict[InstrumentRole, list[NoteEvent]],
     model_output: dict[str, Any],
     default_bpm: float = 120.0,
     *,
     tempo_map_override: list[TempoMapEntry] | None = None,
+    cleanup_stats: CleanupStats | None = None,
+    melody_stats: MelodyExtractionStats | None = None,
 ) -> TranscriptionResult:
     """Convert Basic Pitch's output into our pydantic TranscriptionResult.
 
-    Basic Pitch emits a single polyphonic pitch stream (no instrument
-    separation), so we collapse everything into one ``PIANO`` MidiTrack.
-    Per-note confidence comes straight from the model's sigmoid output
-    (note_events[i][3] is the amplitude at the onset frame, which is the
-    same scalar basic_pitch uses to derive the MIDI velocity).
+    ``events_by_role`` maps a ``InstrumentRole`` (typically MELODY +
+    CHORDS after Phase 2 extraction, or a single PIANO fallback) to the
+    list of ``NoteEvent`` tuples belonging to that role. One
+    ``MidiTrack`` is emitted per non-empty role. Per-track confidence is
+    the mean amplitude of that role's events, clamped to [0.1, 1.0].
+
+    ``pm`` is retained only so we can fall back to ``pm.estimate_tempo``
+    when the waveform-derived tempo map is unavailable — the contract
+    notes are built from ``events_by_role`` directly.
 
     If ``tempo_map_override`` is provided (e.g. from waveform beat
     tracking), it replaces the single-anchor map we'd otherwise build
@@ -75,47 +109,51 @@ def _pretty_midi_to_transcription_result(
     """
     import numpy as np  # noqa: PLC0415 — heavy/optional dep
 
-    contract_notes: list[Note] = []
-    amplitudes: list[float] = []
-    for instrument in pm.instruments:
-        if instrument.is_drum:
-            continue
-        for n in instrument.notes:
-            contract_notes.append(
-                Note(
-                    pitch=int(n.pitch),
-                    onset_sec=float(n.start),
-                    offset_sec=float(n.end),
-                    velocity=int(n.velocity),
-                )
-            )
-    # note_events is the source of truth for per-note confidence; amplitudes
-    # are sigmoid probabilities in [0, 1] from model_output["note"] at each
-    # detected onset frame.
-    for _start, _end, _pitch, amplitude, _bends in note_events:
-        amplitudes.append(float(amplitude))
-
-    contract_notes.sort(key=lambda n: (n.onset_sec, n.pitch))
-
-    # Overall confidence — mean of per-note amplitudes, scaled and clamped.
-    # Fall back to model_output["note"] mean if note_events is empty.
-    if amplitudes:
-        per_note_conf = float(np.mean(amplitudes))
-    else:
-        note_grid = model_output.get("note")
-        per_note_conf = float(np.mean(note_grid)) if note_grid is not None else 0.3
-    track_conf = round(min(max(per_note_conf, 0.1), 1.0), 2)
-
     midi_tracks: list[MidiTrack] = []
-    if contract_notes:
+    all_amplitudes: list[float] = []
+
+    # Deterministic track order so test output is stable — MELODY first
+    # (it's the arrange right-hand target), then the rest.
+    _order = [
+        InstrumentRole.MELODY,
+        InstrumentRole.BASS,
+        InstrumentRole.CHORDS,
+        InstrumentRole.PIANO,
+        InstrumentRole.OTHER,
+    ]
+    ordered_roles = [r for r in _order if r in events_by_role] + [
+        r for r in events_by_role if r not in _order
+    ]
+
+    for role in ordered_roles:
+        events = events_by_role.get(role, [])
+        if not events:
+            continue
+        contract_notes = [_event_to_note(ev) for ev in events]
+        contract_notes.sort(key=lambda n: (n.onset_sec, n.pitch))
+
+        amps = [float(ev[3]) for ev in events]
+        all_amplitudes.extend(amps)
+        role_conf = float(np.mean(amps)) if amps else 0.3
+        role_conf = round(min(max(role_conf, 0.1), 1.0), 2)
+
         midi_tracks.append(
             MidiTrack(
                 notes=contract_notes,
-                instrument=InstrumentRole.PIANO,
+                instrument=role,
                 program=0,
-                confidence=track_conf,
+                confidence=role_conf,
             )
         )
+
+    # Overall confidence — mean of per-note amplitudes across all roles.
+    # Fall back to model_output["note"] mean if everything was empty.
+    if all_amplitudes:
+        overall_conf = float(np.mean(all_amplitudes))
+    else:
+        note_grid = model_output.get("note")
+        overall_conf = float(np.mean(note_grid)) if note_grid is not None else 0.3
+    overall_conf = round(min(max(overall_conf, 0.1), 1.0), 2)
 
     # Tempo map — prefer the waveform-derived beat grid when available.
     # Basic Pitch itself does not estimate tempo, so without the override
@@ -140,16 +178,20 @@ def _pretty_midi_to_transcription_result(
         sections=[],
     )
 
-    total_notes = len(contract_notes)
+    total_notes = sum(len(t.notes) for t in midi_tracks)
     warnings: list[str] = [
         "Basic Pitch baseline (polyphonic pitch tracker, no instrument separation)"
     ]
     if tempo_map_override:
         warnings.append("tempo_map from audio beat tracking (librosa)")
+    if cleanup_stats is not None:
+        warnings.extend(cleanup_stats.as_warnings())
+    if melody_stats is not None:
+        warnings.extend(melody_stats.as_warnings())
     if total_notes < 20:
         warnings.append(f"Low note count ({total_notes}) — possible quality issue")
     quality = QualitySignal(
-        overall_confidence=track_conf if midi_tracks else 0.1,
+        overall_confidence=overall_conf if midi_tracks else 0.1,
         warnings=warnings,
     )
 
@@ -219,9 +261,23 @@ def _audio_path_from_uri(uri: str) -> Path:
 
 
 def _run_basic_pitch_sync(audio_path: Path) -> TranscriptionResult:
-    """Synchronous Basic Pitch inference. Run inside asyncio.to_thread."""
+    """Synchronous Basic Pitch inference. Run inside asyncio.to_thread.
+
+    Note events go through two post-processing passes:
+
+    1. :func:`cleanup_note_events` — Phase 1 MIDI-level heuristics
+       (merge fragmented sustains, drop octave ghosts, ghost-tail
+       pruning). The pretty_midi is rebuilt from the cleaned events so
+       downstream consumers see the scrubbed note list.
+    2. :func:`extract_melody` — Phase 2 waveform-guided melody / chord
+       split via a Viterbi path over ``model_output["contour"]``. Falls
+       back to a single ``PIANO`` track when the extractor is skipped
+       (missing numpy, malformed contour, extraction failure) or finds
+       no melody notes.
+    """
     model = _load_basic_pitch_model()
     from basic_pitch.inference import predict  # noqa: PLC0415
+    from basic_pitch.note_creation import note_events_to_midi  # noqa: PLC0415
 
     model_output, midi_data, note_events = predict(
         str(audio_path),
@@ -230,13 +286,59 @@ def _run_basic_pitch_sync(audio_path: Path) -> TranscriptionResult:
         frame_threshold=settings.basic_pitch_frame_threshold,
         minimum_note_length=settings.basic_pitch_minimum_note_length_ms,
     )
+
+    # Phase 1 — cleanup heuristics over Basic Pitch's note_events. Rebuild
+    # pretty_midi from the cleaned list so any consumer that reads the pm
+    # directly (e.g. tempo estimation) sees the scrubbed set.
+    cleaned_events, cleanup_stats = cleanup_note_events(
+        note_events,
+        merge_gap_sec=settings.cleanup_merge_gap_sec,
+        octave_amp_ratio=settings.cleanup_octave_amp_ratio,
+        octave_onset_tol_sec=settings.cleanup_octave_onset_tol_sec,
+        ghost_max_duration_sec=settings.cleanup_ghost_max_duration_sec,
+        ghost_amp_median_scale=settings.cleanup_ghost_amp_median_scale,
+    )
+    if cleanup_stats.output_count != cleanup_stats.input_count or cleanup_stats.merged:
+        try:
+            midi_data = note_events_to_midi(cleaned_events)
+        except Exception as exc:  # noqa: BLE001 — never let cleanup sink the job
+            log.warning("note_events_to_midi rebuild failed, using raw pm: %s", exc)
+            cleaned_events = note_events  # fall back to raw
+            cleanup_stats.warnings.append("cleanup: rebuild failed, using raw pm")
+
+    # Phase 2 — waveform-guided melody / chord split.
+    melody_stats: MelodyExtractionStats | None = None
+    events_by_role: dict[InstrumentRole, list[NoteEvent]]
+    if settings.melody_extraction_enabled:
+        melody_events, chord_events, melody_stats = extract_melody(
+            model_output.get("contour"),
+            cleaned_events,
+            melody_low_midi=settings.melody_low_midi,
+            melody_high_midi=settings.melody_high_midi,
+            voicing_floor=settings.melody_voicing_floor,
+            transition_weight=settings.melody_transition_weight,
+            max_transition_bins=settings.melody_max_transition_bins,
+            match_fraction=settings.melody_match_fraction,
+        )
+        if melody_stats.skipped or not melody_events:
+            events_by_role = {InstrumentRole.PIANO: cleaned_events}
+        else:
+            events_by_role = {
+                InstrumentRole.MELODY: melody_events,
+                InstrumentRole.CHORDS: chord_events,
+            }
+    else:
+        events_by_role = {InstrumentRole.PIANO: cleaned_events}
+
     # Waveform-derived tempo_map (best-effort; None on failure).
     audio_tempo_map = tempo_map_from_audio_path(audio_path)
     return _pretty_midi_to_transcription_result(
         midi_data,
-        note_events,
+        events_by_role,
         model_output,
         tempo_map_override=audio_tempo_map,
+        cleanup_stats=cleanup_stats,
+        melody_stats=melody_stats,
     )
 
 

@@ -34,5 +34,30 @@ class Settings(BaseSettings):
     basic_pitch_frame_threshold: float = 0.3
     basic_pitch_minimum_note_length_ms: float = 127.7
 
+    # ---- Transcription cleanup (Phase 1 post-processing) -------------------
+    # Heuristic thresholds applied to Basic Pitch's note_events before we
+    # rebuild pretty_midi. See backend/services/transcription_cleanup.py for
+    # the semantics; these pass through as keyword args to cleanup_note_events.
+    cleanup_merge_gap_sec: float = 0.03
+    cleanup_octave_amp_ratio: float = 0.6
+    cleanup_octave_onset_tol_sec: float = 0.05
+    cleanup_ghost_max_duration_sec: float = 0.06
+    cleanup_ghost_amp_median_scale: float = 0.5
+
+    # ---- Melody extraction (Phase 2 post-processing) -----------------------
+    # Viterbi-based melody / chord split driven by Basic Pitch's
+    # ``model_output["contour"]`` salience matrix. See
+    # backend/services/melody_extraction.py for semantics. Disable via
+    # ``OHSHEET_MELODY_EXTRACTION_ENABLED=false`` to keep the legacy
+    # single-PIANO output. Defaults mirror the DEFAULT_* constants in the
+    # extraction module so config and tests agree.
+    melody_extraction_enabled: bool = True
+    melody_low_midi: int = 55                    # G3
+    melody_high_midi: int = 90                   # F#6
+    melody_voicing_floor: float = 0.15
+    melody_transition_weight: float = 0.25
+    melody_max_transition_bins: int = 12         # ≈ 4 semitones / frame
+    melody_match_fraction: float = 0.6
+
 
 settings = Settings()
