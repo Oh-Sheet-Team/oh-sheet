@@ -212,7 +212,7 @@ class _ProgressScreenState extends State<ProgressScreen> {
                             pipelineTips[_tipIndex],
                             key: ValueKey(_tipIndex),
                             textAlign: TextAlign.center,
-                            style: TextStyle(
+                            style: const TextStyle(
                               color: OhSheetColors.mutedText,
                               fontSize: 14,
                               fontWeight: FontWeight.w600,
@@ -243,7 +243,7 @@ class _ProgressScreenState extends State<ProgressScreen> {
               ),
               if (orderedEvents.isNotEmpty) ...[
                 const SliverToBoxAdapter(child: SizedBox(height: 20)),
-                SliverToBoxAdapter(
+                const SliverToBoxAdapter(
                   child: OhSheetStickerSectionTitle(
                     text: 'Activity',
                     accent: OhSheetColors.orange,

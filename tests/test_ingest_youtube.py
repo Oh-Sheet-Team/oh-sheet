@@ -18,7 +18,6 @@ from backend.contracts import (
 )
 from backend.services.ingest import IngestService, extract_youtube_id, is_youtube_url
 
-
 # ---------------------------------------------------------------------------
 # Unit tests: YouTube URL detection
 # ---------------------------------------------------------------------------

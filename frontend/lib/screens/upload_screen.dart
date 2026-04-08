@@ -205,7 +205,7 @@ class _UploadScreenState extends State<UploadScreen> {
                   ),
                 ),
                 const SizedBox(height: 6),
-                Text(
+                const Text(
                   'Upload audio, paste a YouTube link, or drop a MIDI file.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
@@ -215,7 +215,7 @@ class _UploadScreenState extends State<UploadScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Text(
+                const Text(
                   'Let’s get sheet music! 🎹',
                   textAlign: TextAlign.center,
                   style: TextStyle(
@@ -279,7 +279,7 @@ class _UploadScreenState extends State<UploadScreen> {
                                   _mode == _SourceMode.audio
                                       ? 'mp3 · wav · flac · m4a'
                                       : '.mid · .midi',
-                                  style: TextStyle(
+                                  style: const TextStyle(
                                     fontSize: 12,
                                     color: OhSheetColors.mutedText,
                                     fontWeight: FontWeight.w600,

@@ -66,7 +66,7 @@ class _AppShellState extends State<_AppShell> {
                 DecoratedBox(
                   decoration: BoxDecoration(
                     color: Colors.white,
-                    border: Border(
+                    border: const Border(
                       right: BorderSide(color: OhSheetColors.inkStroke, width: 2.5),
                     ),
                     boxShadow: [
@@ -163,9 +163,9 @@ class _LibraryPlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return const Scaffold(
       backgroundColor: OhSheetColors.cream,
-      body: const OhSheetResponsiveBody(
+      body: OhSheetResponsiveBody(
         maxWidth: 420,
         alignTop: false,
         padding: EdgeInsets.all(24),
@@ -198,9 +198,9 @@ class _ProfilePlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return const Scaffold(
       backgroundColor: OhSheetColors.cream,
-      body: const OhSheetResponsiveBody(
+      body: OhSheetResponsiveBody(
         maxWidth: 420,
         alignTop: false,
         padding: EdgeInsets.all(24),
