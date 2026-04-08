@@ -334,4 +334,12 @@ class PipelineRunner:
         if result_dict is None:
             raise RuntimeError("pipeline finished without producing an EngravedOutput")
 
-        return EngravedOutput.model_validate(result_dict)
+        result = EngravedOutput.model_validate(result_dict)
+        # Carry the raw transcription MIDI URI (if any) onto the final
+        # output so the artifacts route can serve it without needing a
+        # separate handle on TranscriptionResult.
+        if txr_dict is not None and txr_dict.get("transcription_midi_uri"):
+            result = result.model_copy(
+                update={"transcription_midi_uri": txr_dict["transcription_midi_uri"]},
+            )
+        return result
