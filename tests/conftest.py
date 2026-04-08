@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,62 @@ from backend.api import deps
 from backend.config import settings
 from backend.main import create_app
 from backend.services import transcribe as transcribe_module
+from backend.workers.celery_app import celery_app as _celery_app
+
+# Import monolith worker modules so their tasks are registered on the celery_app.
+import backend.workers.ingest  # noqa: F401
+import backend.workers.humanize  # noqa: F401
+import backend.workers.engrave  # noqa: F401
+
+
+# Register decomposer and assembler tasks on the monolith celery_app.
+#
+# The external services have their own Celery apps in production, but for
+# testing we need the task functions registered on the single app instance
+# the PipelineRunner dispatches through.
+#
+# We wrap the service logic rather than importing the external task functions
+# directly, because the external tasks construct their own LocalBlobStore
+# from a module-level _BLOB_ROOT that ignores the test's tmp_path.
+
+@_celery_app.task(name="decomposer.run")
+def _decomposer_run(job_id: str, payload_uri: str) -> str:
+    from backend.services.transcribe import TranscribeService
+    from shared.contracts import InputBundle
+    from shared.storage.local import LocalBlobStore
+
+    blob = LocalBlobStore(settings.blob_root)
+    raw = blob.get_json(payload_uri)
+    bundle = InputBundle.model_validate(raw)
+
+    service = TranscribeService()
+    result = asyncio.run(service.run(bundle))
+
+    output_uri = blob.put_json(
+        f"jobs/{job_id}/decomposer/output.json",
+        result.model_dump(mode="json"),
+    )
+    return output_uri
+
+
+@_celery_app.task(name="assembler.run")
+def _assembler_run(job_id: str, payload_uri: str) -> str:
+    from backend.services.arrange import ArrangeService
+    from shared.contracts import TranscriptionResult
+    from shared.storage.local import LocalBlobStore
+
+    blob = LocalBlobStore(settings.blob_root)
+    raw = blob.get_json(payload_uri)
+    txr = TranscriptionResult.model_validate(raw)
+
+    service = ArrangeService()
+    result = asyncio.run(service.run(txr))
+
+    output_uri = blob.put_json(
+        f"jobs/{job_id}/assembler/output.json",
+        result.model_dump(mode="json"),
+    )
+    return output_uri
 
 
 @pytest.fixture(autouse=True)
@@ -36,13 +93,23 @@ def skip_real_transcription(monkeypatch):
     bytes is both slow (cold-start CoreML/ONNX compilation) and flaky
     (librosa silently decodes garbage into zero-length audio). Raising an
     exception from the sync inference helper routes TranscribeService.run
-    through its `except Exception → _stub_result` branch, which is exactly
+    through its `except Exception -> _stub_result` branch, which is exactly
     what the pipeline tests need.
     """
     def _fail_fast(*_args, **_kwargs):
         raise RuntimeError("real transcription disabled in tests")
 
     monkeypatch.setattr(transcribe_module, "_run_basic_pitch_sync", _fail_fast)
+
+
+@pytest.fixture(autouse=True)
+def celery_eager_mode():
+    """Run Celery tasks in-process for all tests."""
+    _celery_app.conf.task_always_eager = True
+    _celery_app.conf.task_eager_propagates = True
+    yield
+    _celery_app.conf.task_always_eager = False
+    _celery_app.conf.task_eager_propagates = False
 
 
 @pytest.fixture
