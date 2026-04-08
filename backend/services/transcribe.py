@@ -25,6 +25,7 @@ import asyncio
 import io
 import logging
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -42,6 +43,10 @@ from backend.contracts import (
     TempoMapEntry,
     TranscriptionResult,
 )
+from backend.services.audio_preprocess import (
+    PreprocessStats,
+    preprocess_audio_file,
+)
 from backend.services.audio_timing import tempo_map_from_audio_path
 from backend.services.bass_extraction import (
     BassExtractionStats,
@@ -54,6 +59,11 @@ from backend.services.chord_recognition import (
 from backend.services.melody_extraction import (
     MelodyExtractionStats,
     extract_melody,
+)
+from backend.services.stem_separation import (
+    SeparatedStems,
+    StemSeparationStats,
+    separate_stems,
 )
 from backend.services.transcription_cleanup import (
     CleanupStats,
@@ -91,6 +101,20 @@ def _event_to_note(event: NoteEvent) -> Note:
     )
 
 
+def _prefixed_warnings(label: str, warnings: list[str]) -> list[str]:
+    """Tag each warning line with a ``[label]`` prefix.
+
+    Used when a stage runs once per Demucs stem — the base warning
+    string comes from ``Stats.as_warnings()`` and doesn't know which
+    stem produced it, so we decorate at the assembly site instead of
+    mutating the stats objects themselves (which would make them
+    harder to diff across re-runs).
+    """
+    if not label:
+        return list(warnings)
+    return [f"[{label}] {w}" for w in warnings]
+
+
 def _pretty_midi_to_transcription_result(
     pm: Any,
     events_by_role: dict[InstrumentRole, list[NoteEvent]],
@@ -98,11 +122,15 @@ def _pretty_midi_to_transcription_result(
     default_bpm: float = 120.0,
     *,
     tempo_map_override: list[TempoMapEntry] | None = None,
+    preprocess_stats: PreprocessStats | None = None,
     cleanup_stats: CleanupStats | None = None,
     melody_stats: MelodyExtractionStats | None = None,
     bass_stats: BassExtractionStats | None = None,
     chord_stats: ChordRecognitionStats | None = None,
     chord_labels: list[RealtimeChordEvent] | None = None,
+    stem_stats: StemSeparationStats | None = None,
+    per_stem_preprocess_stats: dict[str, PreprocessStats] | None = None,
+    per_stem_cleanup_stats: dict[str, CleanupStats] | None = None,
 ) -> TranscriptionResult:
     """Convert Basic Pitch's output into our pydantic TranscriptionResult.
 
@@ -204,8 +232,22 @@ def _pretty_midi_to_transcription_result(
     ]
     if tempo_map_override:
         warnings.append("tempo_map from audio beat tracking (librosa)")
+    if stem_stats is not None:
+        warnings.extend(stem_stats.as_warnings())
+    # Single-pass stats (no Demucs). When the Demucs path is active
+    # these stay None and the per_stem_* dicts carry the equivalents.
+    if preprocess_stats is not None:
+        warnings.extend(preprocess_stats.as_warnings())
     if cleanup_stats is not None:
         warnings.extend(cleanup_stats.as_warnings())
+    # Per-stem stats — one entry per active stem, prefixed so the
+    # reader can tell them apart (e.g. ``[vocals] cleanup: 12 merged``).
+    if per_stem_preprocess_stats:
+        for label, pps in per_stem_preprocess_stats.items():
+            warnings.extend(_prefixed_warnings(label, pps.as_warnings()))
+    if per_stem_cleanup_stats:
+        for label, cps in per_stem_cleanup_stats.items():
+            warnings.extend(_prefixed_warnings(label, cps.as_warnings()))
     if melody_stats is not None:
         warnings.extend(melody_stats.as_warnings())
     if bass_stats is not None:
@@ -301,30 +343,78 @@ def _serialize_pretty_midi(pm: Any) -> bytes | None:
         return None
 
 
-def _run_basic_pitch_sync(audio_path: Path) -> tuple[TranscriptionResult, bytes | None]:
-    """Synchronous Basic Pitch inference. Run inside asyncio.to_thread.
+@dataclass
+class _BasicPitchPass:
+    """Captured outputs of one Basic Pitch inference run on a single audio file.
 
-    Returns both the parsed ``TranscriptionResult`` and the raw MIDI bytes
-    (if serialization succeeded) so the async caller can persist the MIDI
-    to blob storage without blocking on disk I/O in the worker thread.
+    Returned by :func:`_basic_pitch_single_pass` so the orchestrator in
+    :func:`_run_basic_pitch_sync` can either use one pass directly
+    (no-Demucs path) or stitch several passes together (one per stem).
+    """
+    cleaned_events: list[NoteEvent]
+    model_output: dict[str, Any]
+    midi_data: Any  # pretty_midi.PrettyMIDI rebuilt from cleaned_events
+    preprocess_stats: PreprocessStats | None
+    cleanup_stats: CleanupStats
 
-    The note events go through :func:`cleanup_note_events` before we
-    rebuild ``pretty_midi``, so both the contract notes and the
-    serialized ``.mid`` blob reflect the cleaned set. Cleanup is
-    pure-Python and deterministic — see transcription_cleanup.py for the
-    heuristics.
+
+def _basic_pitch_single_pass(audio_path: Path) -> _BasicPitchPass:
+    """Run preprocess → Basic Pitch → cleanup for one audio file.
+
+    Factored out of :func:`_run_basic_pitch_sync` so the Demucs path
+    can call it once per stem (vocals / bass / other) without
+    duplicating the preprocess + predict + cleanup boilerplate. The
+    returned :class:`_BasicPitchPass` carries everything downstream
+    consumers might want: the cleaned note events, Basic Pitch's
+    ``model_output`` (for contour access in Viterbi fallbacks),
+    the rebuilt pretty_midi for blob serialization, and the
+    per-pass stats objects.
+
+    Honors ``settings.audio_preprocess_enabled`` exactly like the
+    old inline code did — the preprocessed tempfile (if any) is
+    unlinked in a ``finally`` regardless of whether ``predict``
+    succeeded, so we never leak temp WAVs on the inference path.
     """
     model = _load_basic_pitch_model()
     from basic_pitch.inference import predict  # noqa: PLC0415
     from basic_pitch.note_creation import note_events_to_midi  # noqa: PLC0415
 
-    model_output, midi_data, note_events = predict(
-        str(audio_path),
-        model_or_model_path=model,
-        onset_threshold=settings.basic_pitch_onset_threshold,
-        frame_threshold=settings.basic_pitch_frame_threshold,
-        minimum_note_length=settings.basic_pitch_minimum_note_length_ms,
-    )
+    # Audio pre-processing (feature-flagged). Any failure falls back
+    # to the original path with stats.skipped=True, so the rest of the
+    # pipeline runs unchanged. The preprocessed temp file is cleaned up
+    # after predict() regardless of success.
+    preprocess_stats: PreprocessStats | None = None
+    inference_path = audio_path
+    preprocessed_tempfile: Path | None = None
+    if settings.audio_preprocess_enabled:
+        inference_path, preprocess_stats = preprocess_audio_file(
+            audio_path,
+            hpss_enabled=settings.audio_preprocess_hpss_enabled,
+            hpss_margin=settings.audio_preprocess_hpss_margin,
+            normalize_enabled=settings.audio_preprocess_normalize_enabled,
+            target_rms_dbfs=settings.audio_preprocess_target_rms_dbfs,
+            peak_ceiling_dbfs=settings.audio_preprocess_peak_ceiling_dbfs,
+        )
+        if inference_path != audio_path:
+            preprocessed_tempfile = inference_path
+
+    try:
+        model_output, midi_data, note_events = predict(
+            str(inference_path),
+            model_or_model_path=model,
+            onset_threshold=settings.basic_pitch_onset_threshold,
+            frame_threshold=settings.basic_pitch_frame_threshold,
+            minimum_note_length=settings.basic_pitch_minimum_note_length_ms,
+        )
+    finally:
+        if preprocessed_tempfile is not None:
+            try:
+                preprocessed_tempfile.unlink(missing_ok=True)
+            except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+                log.warning(
+                    "Failed to unlink preprocessed temp file %s: %s",
+                    preprocessed_tempfile, exc,
+                )
 
     # Phase 1 post-processing — merge fragmented sustains, drop octave
     # ghosts and quiet ghost-tail notes. Rebuild pretty_midi from the
@@ -344,6 +434,68 @@ def _run_basic_pitch_sync(audio_path: Path) -> tuple[TranscriptionResult, bytes 
             log.warning("note_events_to_midi rebuild failed, using raw pm: %s", exc)
             cleaned_events = note_events  # fall back to raw
             cleanup_stats.warnings.append("cleanup: rebuild failed, using raw pm")
+
+    return _BasicPitchPass(
+        cleaned_events=cleaned_events,
+        model_output=model_output,
+        midi_data=midi_data,
+        preprocess_stats=preprocess_stats,
+        cleanup_stats=cleanup_stats,
+    )
+
+
+def _combined_midi_from_events(
+    events_by_role: dict[InstrumentRole, list[NoteEvent]],
+    fallback: Any,
+) -> Any:
+    """Build a single pretty_midi from the concatenated per-role events.
+
+    Used on the Demucs path where we have three independent Basic
+    Pitch passes (vocals / bass / other) and need *one* ``.mid``
+    artifact for blob storage. We flatten the per-role note lists and
+    run them through ``note_events_to_midi`` — the blob MIDI is a
+    debugging artifact, not authoritative, so collapsing the role
+    split there is fine (the contract ``TranscriptionResult`` keeps
+    the split intact).
+
+    On any failure we fall back to ``fallback`` (typically the last
+    pretty_midi we produced in the loop) so blob persistence stays
+    best-effort.
+    """
+    try:
+        from basic_pitch.note_creation import note_events_to_midi  # noqa: PLC0415
+    except ImportError:
+        return fallback
+
+    combined: list[NoteEvent] = []
+    for events in events_by_role.values():
+        combined.extend(events)
+    if not combined:
+        return fallback
+    combined.sort(key=lambda e: (e[0], e[2]))
+    try:
+        return note_events_to_midi(combined)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("combined note_events_to_midi failed: %s", exc)
+        return fallback
+
+
+def _run_without_stems(
+    audio_path: Path,
+    stem_stats: StemSeparationStats | None,
+) -> tuple[TranscriptionResult, bytes | None]:
+    """Legacy single-mix pipeline — one Basic Pitch pass + Viterbi splits.
+
+    This is what ``_run_basic_pitch_sync`` falls back to when Demucs
+    is disabled *or* stem separation failed. ``stem_stats`` may
+    carry a "skipped: ..." message from a failed Demucs attempt;
+    threading it through lets the QualitySignal explain why the
+    per-stem code path didn't run.
+    """
+    pass_result = _basic_pitch_single_pass(audio_path)
+    cleaned_events = pass_result.cleaned_events
+    model_output = pass_result.model_output
+    midi_data = pass_result.midi_data
 
     # Phase 2+3 post-processing — waveform-guided voice split via a
     # Viterbi path over ``model_output["contour"]``, then bass on the
@@ -439,14 +591,229 @@ def _run_basic_pitch_sync(audio_path: Path) -> tuple[TranscriptionResult, bytes 
         events_by_role,
         model_output,
         tempo_map_override=audio_tempo_map,
-        cleanup_stats=cleanup_stats,
+        preprocess_stats=pass_result.preprocess_stats,
+        cleanup_stats=pass_result.cleanup_stats,
         melody_stats=melody_stats,
         bass_stats=bass_stats,
         chord_stats=chord_stats,
         chord_labels=chord_labels,
+        stem_stats=stem_stats,
     )
     midi_bytes = _serialize_pretty_midi(midi_data)
     return result, midi_bytes
+
+
+def _run_with_stems(
+    audio_path: Path,
+    stems: SeparatedStems,
+    stem_stats: StemSeparationStats,
+) -> tuple[TranscriptionResult, bytes | None]:
+    """Demucs-driven pipeline — one Basic Pitch pass per stem.
+
+    Routing:
+
+      * ``vocals.wav`` → Basic Pitch → MELODY events
+      * ``bass.wav``   → Basic Pitch → BASS events
+      * ``other.wav``  → Basic Pitch → CHORDS events
+      * ``drums.wav``  → ``tempo_map_from_audio_path`` (beat tracking)
+      * ``other.wav``  → ``recognize_chords`` (chroma + triad templates)
+
+    Each routing is gated by a ``demucs_use_*`` flag so an operator
+    can disable a single stem without touching the others (e.g. turn
+    off drums-for-beats on material where Demucs drums is noisy, and
+    let beat tracking fall back to the mix). When a stem is missing
+    or its consumer returns empty, we fall back to the *original*
+    mixed audio for that stage — the Viterbi melody/bass extractors
+    stay off in this code path regardless, because their purpose is
+    to compensate for the single-mix Basic Pitch limitation the
+    stems already fix.
+    """
+    events_by_role: dict[InstrumentRole, list[NoteEvent]] = {}
+    per_stem_preprocess_stats: dict[str, PreprocessStats] = {}
+    per_stem_cleanup_stats: dict[str, CleanupStats] = {}
+    per_stem_passes: dict[str, _BasicPitchPass] = {}
+
+    def _run_stem(label: str, stem_path: Path | None) -> _BasicPitchPass | None:
+        if stem_path is None:
+            return None
+        try:
+            bp = _basic_pitch_single_pass(stem_path)
+        except Exception as exc:  # noqa: BLE001 — one bad stem must not sink the job
+            log.warning("Basic Pitch failed on %s stem (%s): %s", label, stem_path, exc)
+            return None
+        per_stem_passes[label] = bp
+        if bp.preprocess_stats is not None:
+            per_stem_preprocess_stats[label] = bp.preprocess_stats
+        per_stem_cleanup_stats[label] = bp.cleanup_stats
+        return bp
+
+    vocals_bp = (
+        _run_stem("vocals", stems.vocals)
+        if settings.demucs_use_vocals_for_melody
+        else None
+    )
+    bass_bp = (
+        _run_stem("bass", stems.bass)
+        if settings.demucs_use_bass_stem
+        else None
+    )
+    other_bp = (
+        _run_stem("other", stems.other)
+        if settings.demucs_use_other_for_chords
+        else None
+    )
+
+    if vocals_bp is not None and vocals_bp.cleaned_events:
+        events_by_role[InstrumentRole.MELODY] = vocals_bp.cleaned_events
+    if bass_bp is not None and bass_bp.cleaned_events:
+        events_by_role[InstrumentRole.BASS] = bass_bp.cleaned_events
+    if other_bp is not None and other_bp.cleaned_events:
+        events_by_role[InstrumentRole.CHORDS] = other_bp.cleaned_events
+
+    # If every per-stem pass came back empty we can't ship a useful
+    # stem-driven result. Fall back to the single-mix pipeline so the
+    # caller still gets notes, and tag stem_stats so the QualitySignal
+    # explains why we bailed.
+    if not events_by_role:
+        log.warning(
+            "all Demucs stems produced empty Basic Pitch output for %s; "
+            "falling back to single-mix path",
+            audio_path,
+        )
+        stem_stats.warnings.append("all stems empty; fell back to single-mix")
+        return _run_without_stems(audio_path, stem_stats)
+
+    # Tempo map — prefer the drums stem when enabled and available.
+    # A drums-stem beat track that returns no beats (possible on
+    # cappella / ambient material) falls back to the mix so the
+    # downstream tempo_map is still waveform-derived.
+    tempo_src: Path = audio_path
+    if settings.demucs_use_drums_for_beats and stems.drums is not None:
+        tempo_src = stems.drums
+    audio_tempo_map = tempo_map_from_audio_path(tempo_src)
+    if audio_tempo_map is None and tempo_src != audio_path:
+        log.debug("drums-stem beat tracking returned None, retrying with mix")
+        audio_tempo_map = tempo_map_from_audio_path(audio_path)
+
+    # Chord recognition — prefer the "other" stem when enabled and
+    # available. Chord labeling on the other stem is cleaner because
+    # vocal sibilance and drum spectral leakage don't pollute the
+    # chroma vectors. Same mix-fallback pattern as beat tracking.
+    chord_labels: list[RealtimeChordEvent] = []
+    chord_stats: ChordRecognitionStats | None = None
+    if settings.chord_recognition_enabled:
+        chord_src: Path = audio_path
+        if settings.demucs_use_other_for_chords and stems.other is not None:
+            chord_src = stems.other
+        try:
+            chord_labels, chord_stats = recognize_chords(
+                chord_src,
+                min_score=settings.chord_min_template_score,
+                hpss_margin=settings.chord_hpss_margin,
+            )
+            if chord_stats.skipped and chord_src != audio_path:
+                log.debug(
+                    "chord recognition on other-stem skipped, retrying with mix"
+                )
+                chord_labels, chord_stats = recognize_chords(
+                    audio_path,
+                    min_score=settings.chord_min_template_score,
+                    hpss_margin=settings.chord_hpss_margin,
+                )
+        except Exception as exc:  # noqa: BLE001 — chord recog must not sink transcribe
+            log.warning("chord recognition raised: %s", exc)
+            chord_labels = []
+            chord_stats = ChordRecognitionStats(skipped=True)
+            chord_stats.warnings.append(f"chord recognition failed: {exc}")
+
+    # Pick a representative pretty_midi for the blob artifact — we
+    # prefer the "other" pass because it carries the largest note
+    # count on most material, and fall back to whichever stem did
+    # return something. The combined builder flattens every stem's
+    # notes into one list for serialization so the blob is still a
+    # complete debugging artifact (just without role tags, which
+    # pretty_midi can't represent losslessly anyway).
+    #
+    # This is reached only after the ``not events_by_role`` guard
+    # above, so at least one of the three passes is non-None — the
+    # ``or``-chain always returns a real _BasicPitchPass here. The
+    # explicit binding is for type narrowing.
+    representative_pass: _BasicPitchPass | None = other_bp or bass_bp or vocals_bp
+    fallback_midi = representative_pass.midi_data if representative_pass else None
+    combined_midi = _combined_midi_from_events(events_by_role, fallback_midi)
+
+    # Representative model_output for the existing note_grid confidence
+    # fallback in _pretty_midi_to_transcription_result. We pass the
+    # "other" stem's model_output when available because it mirrors
+    # the mix-wide harmonic density best; otherwise any available
+    # pass works — the fallback is only exercised when events_by_role
+    # is empty, which we already guarded against above.
+    representative_model_output: dict[str, Any] = (
+        representative_pass.model_output if representative_pass else {}
+    )
+
+    result = _pretty_midi_to_transcription_result(
+        combined_midi,
+        events_by_role,
+        representative_model_output,
+        tempo_map_override=audio_tempo_map,
+        preprocess_stats=None,  # surfaced per-stem below
+        cleanup_stats=None,     # surfaced per-stem below
+        melody_stats=None,      # Viterbi split is skipped on the stems path
+        bass_stats=None,
+        chord_stats=chord_stats,
+        chord_labels=chord_labels,
+        stem_stats=stem_stats,
+        per_stem_preprocess_stats=per_stem_preprocess_stats,
+        per_stem_cleanup_stats=per_stem_cleanup_stats,
+    )
+    midi_bytes = _serialize_pretty_midi(combined_midi) if combined_midi else None
+    return result, midi_bytes
+
+
+def _run_basic_pitch_sync(audio_path: Path) -> tuple[TranscriptionResult, bytes | None]:
+    """Synchronous Basic Pitch inference. Run inside asyncio.to_thread.
+
+    Returns both the parsed ``TranscriptionResult`` and the raw MIDI bytes
+    (if serialization succeeded) so the async caller can persist the MIDI
+    to blob storage without blocking on disk I/O in the worker thread.
+
+    Dispatches between two pipelines:
+
+      * **Demucs path** (``settings.demucs_enabled``): split the source
+        into 4 stems, run Basic Pitch once per stem (vocals / bass /
+        other), and route drums + other to the beat-track and chord
+        recognizers. See :func:`_run_with_stems`.
+      * **Single-mix path** (default): one Basic Pitch pass on the
+        whole mix + Viterbi melody/bass split + chord recognition on
+        the original waveform. See :func:`_run_without_stems`.
+
+    Any failure in the Demucs path (separation crash, all-stems-empty,
+    missing torch) transparently falls back to the single-mix path so
+    flipping ``demucs_enabled`` is always safe — the worst case is that
+    the user pays the Demucs load cost for nothing.
+    """
+    stems: SeparatedStems | None = None
+    stem_stats: StemSeparationStats | None = None
+
+    if settings.demucs_enabled:
+        stems, stem_stats = separate_stems(
+            audio_path,
+            model_name=settings.demucs_model,
+            device=settings.demucs_device,
+            segment_sec=settings.demucs_segment_sec,
+            shifts=settings.demucs_shifts,
+            overlap=settings.demucs_overlap,
+            split=settings.demucs_split,
+        )
+
+    try:
+        if stems is not None and stem_stats is not None:
+            return _run_with_stems(audio_path, stems, stem_stats)
+        return _run_without_stems(audio_path, stem_stats)
+    finally:
+        if stems is not None:
+            stems.cleanup()
 
 
 class TranscribeService:
