@@ -183,6 +183,7 @@ class TranscriptionResult(BaseModel):
     midi_tracks: list[MidiTrack]
     analysis: HarmonicAnalysis
     quality: QualitySignal
+    transcription_midi_uri: str | None = None
 
 
 # ---------------------------------------------------------------------------

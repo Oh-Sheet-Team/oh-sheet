@@ -233,6 +233,12 @@ class PipelineRunner:
                     args=[job_id, payload_uri],
                 )
             else:
+                if self.celery_app.conf.get("task_always_eager"):
+                    raise RuntimeError(
+                        f"Task {task_name!r} is not registered on the Celery app "
+                        f"but task_always_eager is True. Register a stub in "
+                        f"conftest.py to avoid hitting a real broker in tests."
+                    )
                 result = self.celery_app.send_task(
                     task_name, args=[job_id, payload_uri],
                 )

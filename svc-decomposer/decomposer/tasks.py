@@ -23,8 +23,8 @@ def run(job_id: str, payload_uri: str) -> str:
     # Stub: delegate to existing TranscribeService
     from backend.services.transcribe import TranscribeService
 
-    service = TranscribeService()
-    result = asyncio.run(service.run(bundle))
+    service = TranscribeService(blob_store=blob)
+    result = asyncio.run(service.run(bundle, job_id=job_id))
 
     output_uri = blob.put_json(
         f"jobs/{job_id}/decomposer/output.json",

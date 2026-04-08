@@ -38,8 +38,8 @@ def _decomposer_run(job_id: str, payload_uri: str) -> str:
     raw = blob.get_json(payload_uri)
     bundle = InputBundle.model_validate(raw)
 
-    service = TranscribeService()
-    result = asyncio.run(service.run(bundle))
+    service = TranscribeService(blob_store=blob)
+    result = asyncio.run(service.run(bundle, job_id=job_id))
 
     output_uri = blob.put_json(
         f"jobs/{job_id}/decomposer/output.json",
