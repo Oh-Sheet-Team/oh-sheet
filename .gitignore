@@ -13,6 +13,12 @@ blob/
 .DS_Store
 .vscode/
 .idea/
+# Cursor — project-local agent skills (personal / machine-specific)
+.cursor/skills/
+# PRPM-installed Claude Code skills (see CLAUDE.md manifest); keep ADR skill versioned
+.openskills/*
+!.openskills/skill-log-architectural-decisions/
+!.openskills/skill-log-architectural-decisions/**
 LINEAR_TICKETS.md
 STUDY_GUIDE.md
 PRD.md
