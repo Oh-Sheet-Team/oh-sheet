@@ -10,6 +10,7 @@ Oh Sheet is an automated pipeline that transforms songs (MP3, MIDI, or YouTube l
 
 ```bash
 # Install
+make install              # Everything (backend + ML deps + frontend)
 make install-backend      # Backend + dev deps only (no ML)
 make install-basic-pitch  # Audio transcription ML deps
 
