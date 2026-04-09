@@ -151,7 +151,7 @@ class _ProgressScreenState extends State<ProgressScreen> {
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: const Text('Oh Sheet'),
+        title: const Text('Oh Sheet!'),
       ),
       body: SafeArea(
         child: OhSheetResponsiveBody(
