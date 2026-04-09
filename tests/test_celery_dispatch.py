@@ -10,6 +10,7 @@ from shared.contracts import (
     InputMetadata,
     PipelineConfig,
     RemoteAudioFile,
+    RemoteMidiFile,
 )
 from shared.storage.local import LocalBlobStore
 
@@ -87,3 +88,63 @@ async def test_transcription_midi_uri_survives_pipeline(runner):
 
     assert result.transcription_midi_uri is not None
     assert "basic-pitch.mid" in result.transcription_midi_uri
+
+
+@pytest.mark.asyncio
+async def test_midi_upload_pipeline_via_celery(runner):
+    """A midi_upload job should skip transcribe and use _bundle_to_transcription fallback."""
+    events: list[JobEvent] = []
+
+    bundle = InputBundle(
+        midi=RemoteMidiFile(
+            uri="file:///fake/input.mid",
+            ticks_per_beat=480,
+        ),
+        metadata=InputMetadata(title="MIDI Test", artist="Tester", source="midi_upload"),
+    )
+    config = PipelineConfig(variant="midi_upload")
+
+    result = await runner.run(
+        job_id="test-celery-midi-001",
+        bundle=bundle,
+        config=config,
+        on_event=events.append,
+    )
+
+    assert result.pdf_uri
+    assert result.musicxml_uri
+    assert result.humanized_midi_uri
+
+    stage_names = [e.stage for e in events if e.type == "stage_completed"]
+    assert stage_names == ["ingest", "arrange", "humanize", "engrave"]
+
+
+@pytest.mark.asyncio
+async def test_sheet_only_pipeline_via_celery(runner):
+    """A sheet_only job should skip humanize; engrave receives PianoScore directly."""
+    events: list[JobEvent] = []
+
+    bundle = InputBundle(
+        audio=RemoteAudioFile(
+            uri="file:///fake/audio.wav",
+            format="wav",
+            sample_rate=44100,
+            duration_sec=10.0,
+            channels=1,
+        ),
+        metadata=InputMetadata(title="Sheet Test", artist="Tester", source="audio_upload"),
+    )
+    config = PipelineConfig(variant="sheet_only")
+
+    result = await runner.run(
+        job_id="test-celery-sheet-001",
+        bundle=bundle,
+        config=config,
+        on_event=events.append,
+    )
+
+    assert result.pdf_uri
+    assert result.musicxml_uri
+
+    stage_names = [e.stage for e in events if e.type == "stage_completed"]
+    assert stage_names == ["ingest", "transcribe", "arrange", "engrave"]
