@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlparse
@@ -272,66 +273,96 @@ class PipelineRunner:
         perf_dict: dict | None = None
         result_dict: dict | None = None
 
+        log.info(
+            "pipeline start job_id=%s variant=%s plan=%s skip_humanizer=%s source=%s "
+            "has_audio=%s has_midi=%s",
+            job_id,
+            config.variant,
+            plan,
+            config.skip_humanizer,
+            bundle.metadata.source,
+            bundle.audio is not None,
+            bundle.midi is not None,
+        )
+
         for i, step in enumerate(plan):
             emit(step, "stage_started", progress=i / n)
-
+            log.info(
+                "pipeline stage begin job_id=%s stage=%s index=%d/%d",
+                job_id, step, i + 1, n,
+            )
+            t0 = time.perf_counter()
             task_name = STEP_TO_TASK[step]
 
-            if step == "ingest":
-                payload_uri = self._serialize_stage_input(job_id, step, current_payload)
-                output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.max_duration_sec)
-                current_payload = self.blob_store.get_json(output_uri)
-                # current_payload is now the enriched InputBundle dict
+            try:
+                if step == "ingest":
+                    payload_uri = self._serialize_stage_input(job_id, step, current_payload)
+                    output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.max_duration_sec)
+                    current_payload = self.blob_store.get_json(output_uri)
 
-            elif step == "transcribe":
-                payload_uri = self._serialize_stage_input(job_id, step, current_payload)
-                output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.max_duration_sec)
-                txr_dict = self.blob_store.get_json(output_uri)
+                elif step == "transcribe":
+                    payload_uri = self._serialize_stage_input(job_id, step, current_payload)
+                    output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.max_duration_sec)
+                    txr_dict = self.blob_store.get_json(output_uri)
 
-            elif step == "arrange":
-                if txr_dict is None:
-                    # midi_upload variant: build transcription from bundle
-                    bundle_obj = InputBundle.model_validate(current_payload)
-                    txr_obj = _bundle_to_transcription(bundle_obj)
-                    txr_dict = txr_obj.model_dump(mode="json")
-                payload_uri = self._serialize_stage_input(job_id, step, txr_dict)
-                output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.max_duration_sec)
-                score_dict = self.blob_store.get_json(output_uri)
+                elif step == "arrange":
+                    if txr_dict is None:
+                        # midi_upload variant: build transcription from bundle
+                        bundle_obj = InputBundle.model_validate(current_payload)
+                        log.info(
+                            "pipeline job_id=%s arrange: using MIDI→TranscriptionResult passthrough",
+                            job_id,
+                        )
+                        txr_obj = _bundle_to_transcription(bundle_obj)
+                        txr_dict = txr_obj.model_dump(mode="json")
+                    payload_uri = self._serialize_stage_input(job_id, step, txr_dict)
+                    output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.max_duration_sec)
+                    score_dict = self.blob_store.get_json(output_uri)
 
-            elif step == "humanize":
-                if score_dict is None:
-                    raise RuntimeError("humanize stage requires a PianoScore -- none was produced")
-                payload_uri = self._serialize_stage_input(job_id, step, score_dict)
-                output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.max_duration_sec)
-                perf_dict = self.blob_store.get_json(output_uri)
+                elif step == "humanize":
+                    if score_dict is None:
+                        raise RuntimeError("humanize stage requires a PianoScore — none was produced")
+                    payload_uri = self._serialize_stage_input(job_id, step, score_dict)
+                    output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.max_duration_sec)
+                    perf_dict = self.blob_store.get_json(output_uri)
 
-            elif step == "engrave":
-                # Engrave needs special envelope with payload_type discriminator
-                if perf_dict is not None:
-                    engrave_envelope = {
-                        "payload": perf_dict,
-                        "payload_type": "HumanizedPerformance",
-                        "job_id": job_id,
-                        "title": title,
-                        "composer": composer,
-                    }
-                elif score_dict is not None:
-                    engrave_envelope = {
-                        "payload": score_dict,
-                        "payload_type": "PianoScore",
-                        "job_id": job_id,
-                        "title": title,
-                        "composer": composer,
-                    }
+                elif step == "engrave":
+                    if perf_dict is not None:
+                        engrave_envelope = {
+                            "payload": perf_dict,
+                            "payload_type": "HumanizedPerformance",
+                            "job_id": job_id,
+                            "title": title,
+                            "composer": composer,
+                        }
+                    elif score_dict is not None:
+                        engrave_envelope = {
+                            "payload": score_dict,
+                            "payload_type": "PianoScore",
+                            "job_id": job_id,
+                            "title": title,
+                            "composer": composer,
+                        }
+                    else:
+                        raise RuntimeError("engrave stage requires a score or performance — none was produced")
+                    payload_uri = self._serialize_stage_input(job_id, step, engrave_envelope)
+                    output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.max_duration_sec)
+                    result_dict = self.blob_store.get_json(output_uri)
+
                 else:
-                    raise RuntimeError("engrave stage requires a score or performance -- none was produced")
-                payload_uri = self._serialize_stage_input(job_id, step, engrave_envelope)
-                output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.max_duration_sec)
-                result_dict = self.blob_store.get_json(output_uri)
+                    raise RuntimeError(f"unknown stage in execution plan: {step!r}")
+            except Exception:
+                log.exception(
+                    "pipeline stage failed job_id=%s stage=%s index=%d/%d",
+                    job_id, step, i + 1, n,
+                )
+                raise
 
-            else:
-                raise RuntimeError(f"unknown stage in execution plan: {step!r}")
-
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            log.info(
+                "pipeline stage done job_id=%s stage=%s duration_ms=%.0f",
+                job_id, step, elapsed_ms,
+            )
             emit(step, "stage_completed", progress=(i + 1) / n)
 
         if result_dict is None:
@@ -345,4 +376,5 @@ class PipelineRunner:
             result = result.model_copy(
                 update={"transcription_midi_uri": txr_dict["transcription_midi_uri"]},
             )
+        log.info("pipeline finished job_id=%s", job_id)
         return result

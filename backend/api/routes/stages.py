@@ -11,6 +11,7 @@ in-process for external orchestrators.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 
@@ -35,6 +36,8 @@ from backend.services.ingest import IngestService
 from backend.services.transcribe import TranscribeService
 from backend.storage.local import LocalBlobStore
 
+log = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -55,6 +58,13 @@ async def _run_stage(
     output_key: str,
 ) -> WorkerResponse:
     _check_envelope(cmd)
+    log.info(
+        "worker stage %s job_id=%s step_id=%s payload_uri=%s",
+        output_key,
+        cmd.job_id,
+        cmd.step_id,
+        cmd.payload_uri,
+    )
     try:
         payload_dict = blob.get_json(cmd.payload_uri)
         payload = input_model.model_validate(payload_dict)
@@ -63,6 +73,13 @@ async def _run_stage(
             f"jobs/{cmd.job_id}/{cmd.step_id}/{output_key}",
             result.model_dump(mode="json"),
         )
+        log.info(
+            "worker stage %s job_id=%s step_id=%s output_uri=%s",
+            output_key,
+            cmd.job_id,
+            cmd.step_id,
+            out_uri,
+        )
         return WorkerResponse(
             schema_version=SCHEMA_VERSION,
             job_id=cmd.job_id,
@@ -70,6 +87,12 @@ async def _run_stage(
             output_uri=out_uri,
         )
     except Exception as exc:  # noqa: BLE001 — boundary
+        log.exception(
+            "worker stage %s job_id=%s step_id=%s failed",
+            output_key,
+            cmd.job_id,
+            cmd.step_id,
+        )
         return WorkerResponse(
             schema_version=SCHEMA_VERSION,
             job_id=cmd.job_id,
