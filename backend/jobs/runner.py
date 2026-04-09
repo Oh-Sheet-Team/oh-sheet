@@ -39,8 +39,8 @@ EventCallback = Callable[[JobEvent], None]
 # Maps execution plan step names to Celery task names.
 STEP_TO_TASK: dict[str, str] = {
     "ingest": "ingest.run",
-    "transcribe": "decomposer.run",
-    "arrange": "assembler.run",
+    "transcribe": "transcribe.run",
+    "arrange": "arrange.run",
     "humanize": "humanize.run",
     "engrave": "engrave.run",
 }

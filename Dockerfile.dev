@@ -11,4 +11,5 @@ RUN pip install --no-cache-dir ./shared
 
 COPY pyproject.toml .
 COPY backend/ backend/
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir "setuptools<78" ".[basic-pitch]" \
+    && pip install --no-cache-dir --no-deps "basic-pitch>=0.4"

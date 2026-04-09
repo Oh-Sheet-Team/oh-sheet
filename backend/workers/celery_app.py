@@ -17,10 +17,10 @@ celery_app.conf.update(
     task_default_queue="default",
     task_routes={
         "ingest.run": {"queue": "ingest"},
+        "transcribe.run": {"queue": "transcribe"},
+        "arrange.run": {"queue": "arrange"},
         "humanize.run": {"queue": "humanize"},
         "engrave.run": {"queue": "engrave"},
-        "decomposer.run": {"queue": "decomposer"},
-        "assembler.run": {"queue": "assembler"},
     },
 )
 
