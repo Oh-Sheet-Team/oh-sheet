@@ -97,7 +97,7 @@ jobs:
           curl -sf -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
             -H 'Content-type: application/json' \
             -d "{
-              \"text\": \":white_check_mark: *oh-sheet deployed* \`${COMMIT_SHORT}\` to \`${{ vars.VM_HOST }}\` — <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>\"
+              \"text\": \":white_check_mark: *oh-sheet deployed* \`${COMMIT_SHORT}\` to <http://${{ vars.VM_HOST }}> — <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>\"
             }"
 
       - name: Notify Slack on failure
