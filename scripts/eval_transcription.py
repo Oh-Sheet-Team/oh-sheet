@@ -1,8 +1,20 @@
 """Transcription eval harness: score the pipeline against clean_midi.
 
 The :mod:`clean_midi` dataset (Lakh MIDI Clean) is a MIDI-only corpus of
-~17k songs organized by artist. To turn it into a ground-truth set for
-our audio-in / notes-out pipeline, we:
+~17k songs organized by artist. A 25-file reproducible subset of that
+corpus lives at ``eval/fixtures/clean_midi/`` and is tracked in-repo
+— running this script with no arguments scores the pipeline against
+that subset and produces an output that should match
+``eval-baseline.json`` byte-for-byte (modulo transcription-logic
+changes). For broader sweeps over the full 17k-song corpus, fetch
+the canonical tarball from
+``http://hog.ee.columbia.edu/craffel/lmd/clean_midi.tar.gz`` (CC BY
+4.0) and run with ``--dataset clean_midi --sample N``. The top-level
+``clean_midi/`` is gitignored so the full corpus never leaks into
+the repo.
+
+To turn it into a ground-truth set for our audio-in / notes-out
+pipeline, we:
 
   1. Sample a subset of .mid files
   2. Truncate each to a sanity-sized window (default 30 s) so a full
@@ -69,7 +81,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_DATASET = REPO_ROOT / "clean_midi"
+DEFAULT_DATASET = REPO_ROOT / "eval" / "fixtures" / "clean_midi"
 DEFAULT_CACHE = REPO_ROOT / ".cache" / "eval_transcription"
 DEFAULT_SAMPLE_RATE = 44100
 DEFAULT_MAX_DURATION = 30.0
@@ -712,13 +724,18 @@ def _write_json(
     ``.aggregate.mean_f1_no_offset`` in a CI gate without having to
     know the dataclass layout.
     """
+    # Sort files by path so regenerating the baseline is order-stable —
+    # ``random.sample`` returns a permutation that depends on both the
+    # seed and the full input list, but reviewers care about the scoring
+    # output, not the schedule the harness happened to run in.
+    sorted_rows = sorted(rows, key=lambda r: r.path)
     payload = {
         "meta": {
             "max_duration_sec": cfg.max_duration,
             "sample_rate": cfg.sample_rate,
             "n_files": len(cfg.paths),
         },
-        "files": [asdict(r) for r in rows],
+        "files": [asdict(r) for r in sorted_rows],
         "aggregate": agg,
         "per_role": role_scores,
     }
@@ -747,8 +764,12 @@ def main() -> int:
     parser.add_argument(
         "--sample",
         type=int,
-        default=5,
-        help="Number of files to randomly sample from the dataset (default: 5).",
+        default=25,
+        help=(
+            "Number of files to randomly sample from the dataset "
+            "(default: 25, which scores every file in the tracked "
+            "``eval/fixtures/clean_midi/`` subset)."
+        ),
     )
     parser.add_argument(
         "--seed",

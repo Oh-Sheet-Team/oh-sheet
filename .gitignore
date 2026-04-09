@@ -11,7 +11,7 @@ dist/
 build/
 blob/
 .cache/
-clean_midi/
+/clean_midi/
 .DS_Store
 .vscode/
 .idea/
