@@ -93,7 +93,8 @@ def test_arrange_dedups_same_pitch_across_tracks_keep_loudest() -> None:
                 instrument=InstrumentRole.CHORDS,
                 program=1,
                 confidence=0.9,
-                notes=[Note(pitch=72, onset_sec=0.66, offset_sec=0.96, velocity=100)],
+                # Within NEAR_OVERLAP_TOL after quantization so dedup keeps the louder hit.
+                notes=[Note(pitch=72, onset_sec=0.54, offset_sec=0.84, velocity=100)],
             ),
         ]
     )
@@ -101,8 +102,8 @@ def test_arrange_dedups_same_pitch_across_tracks_keep_loudest() -> None:
     score = _arrange_sync(payload, "intermediate")
 
     assert len(score.right_hand) == 1
-    # 0.66s at 120 BPM => 1.32 beats, quantized to 1.25 (the louder note).
-    assert score.right_hand[0].onset_beat == 1.25
+    # Both land on the 1.0 beat grid; louder velocity survives.
+    assert score.right_hand[0].onset_beat == 1.0
     assert score.right_hand[0].pitch == 72
     assert len(score.left_hand) == 0
 

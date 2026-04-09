@@ -12,14 +12,8 @@ from functools import lru_cache
 from backend.config import settings
 from backend.jobs.manager import JobManager
 from backend.jobs.runner import PipelineRunner
-from backend.services.arrange import ArrangeService
-from backend.services.condense import CondenseService
-from backend.services.engrave import EngraveService
-from backend.services.humanize import HumanizeService
-from backend.services.ingest import IngestService
-from backend.services.transcribe import TranscribeService
-from backend.services.transform import TransformService
 from backend.storage.local import LocalBlobStore
+from backend.workers.celery_app import celery_app
 
 
 @lru_cache(maxsize=1)
@@ -29,15 +23,9 @@ def get_blob_store() -> LocalBlobStore:
 
 @lru_cache(maxsize=1)
 def get_runner() -> PipelineRunner:
-    blob = get_blob_store()
     return PipelineRunner(
-        ingest=IngestService(blob_store=blob),
-        transcribe=TranscribeService(),
-        arrange=ArrangeService(),
-        condense=CondenseService(),
-        transform=TransformService(),
-        humanize=HumanizeService(),
-        engrave=EngraveService(blob_store=blob),
+        blob_store=get_blob_store(),
+        celery_app=celery_app,
     )
 
 

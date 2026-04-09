@@ -1,18 +1,46 @@
 """FastAPI application factory and uvicorn entry point."""
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from backend.api.routes import artifacts, health, jobs, stages, uploads, ws
 from backend.config import settings
 from backend.contracts import SCHEMA_VERSION
 
+# Flutter web build output — present in the Docker image at /app/static.
+_STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+
+def _configure_app_logging() -> None:
+    """Attach a handler to ``backend.*`` so INFO logs show up in the server console.
+
+    Python's root logger defaults to WARNING; Uvicorn does not raise it for
+    application loggers. We scope to the ``backend`` package so library noise
+    stays at default levels unless you tune those loggers separately.
+    """
+    level = getattr(logging, settings.log_level.upper(), None)
+    if not isinstance(level, int):
+        level = logging.INFO
+    backend_logger = logging.getLogger("backend")
+    backend_logger.setLevel(level)
+    if not backend_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(levelname)s [%(name)s] %(message)s"),
+        )
+        backend_logger.addHandler(handler)
+    backend_logger.propagate = False
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _configure_app_logging()
     settings.blob_root.mkdir(parents=True, exist_ok=True)
     yield
 
@@ -39,6 +67,10 @@ def create_app() -> FastAPI:
     app.include_router(artifacts.router, prefix="/v1", tags=["artifacts"])
     app.include_router(stages.router, prefix="/v1", tags=["stages"])
     app.include_router(ws.router, prefix="/v1", tags=["websocket"])
+
+    # IMPORTANT: mount AFTER API routers — StaticFiles at "/" is a catch-all.
+    if _STATIC_DIR.is_dir():
+        app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
 
     return app
 

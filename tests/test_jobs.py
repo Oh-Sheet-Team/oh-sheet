@@ -67,7 +67,10 @@ def test_get_job_returns_404_for_unknown(client):
     assert response.status_code == 404
 
 
-def test_websocket_streams_events_to_completion(client):
+def test_websocket_streams_events_to_completion(monkeypatch, client):
+    # Default arrange path; local .env may set condense_transform for manual QA.
+    monkeypatch.setattr(settings, "score_pipeline", "arrange")
+
     midi = client.post(
         "/v1/uploads/midi",
         files={"file": ("a.mid", b"MThd\x00\x00\x00\x06\x00\x00\x00\x00\x00\x00", "audio/midi")},

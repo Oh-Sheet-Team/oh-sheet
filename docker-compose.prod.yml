@@ -1,0 +1,146 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # No `ports:` — Redis is only reachable by other services on the
+    # internal Docker network, never exposed to the host.
+    expose:
+      - "6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  orchestrator:
+    image: ${IMAGE}
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 2
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      OHSHEET_BLOB_ROOT: /app/blob
+      OHSHEET_REDIS_URL: redis://redis:6379/0
+      COMMIT_SHA: ${COMMIT_SHA:-unknown}
+    volumes:
+      - blob-data:/app/blob
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  worker-ingest:
+    image: ${IMAGE}
+    command: celery -A backend.workers.celery_app worker -Q ingest -c 1 --loglevel=warning
+    restart: unless-stopped
+    environment:
+      OHSHEET_BLOB_ROOT: /app/blob
+      OHSHEET_REDIS_URL: redis://redis:6379/0
+    volumes:
+      - blob-data:/app/blob
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker-transcribe:
+    image: ${IMAGE}
+    command: celery -A backend.workers.celery_app worker -Q transcribe -c 1 --loglevel=warning
+    restart: unless-stopped
+    environment:
+      OHSHEET_BLOB_ROOT: /app/blob
+      OHSHEET_REDIS_URL: redis://redis:6379/0
+    volumes:
+      - blob-data:/app/blob
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker-arrange:
+    image: ${IMAGE}
+    command: celery -A backend.workers.celery_app worker -Q arrange -c 1 --loglevel=warning
+    restart: unless-stopped
+    environment:
+      OHSHEET_BLOB_ROOT: /app/blob
+      OHSHEET_REDIS_URL: redis://redis:6379/0
+    volumes:
+      - blob-data:/app/blob
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker-decomposer:
+    image: ${IMAGE_DECOMPOSER}
+    restart: unless-stopped
+    environment:
+      OHSHEET_BLOB_ROOT: /app/blob
+      OHSHEET_REDIS_URL: redis://redis:6379/0
+    volumes:
+      - blob-data:/app/blob
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker-assembler:
+    image: ${IMAGE_ASSEMBLER}
+    restart: unless-stopped
+    environment:
+      OHSHEET_BLOB_ROOT: /app/blob
+      OHSHEET_REDIS_URL: redis://redis:6379/0
+    volumes:
+      - blob-data:/app/blob
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker-humanize:
+    image: ${IMAGE}
+    command: celery -A backend.workers.celery_app worker -Q humanize -c 1 --loglevel=warning
+    restart: unless-stopped
+    environment:
+      OHSHEET_BLOB_ROOT: /app/blob
+      OHSHEET_REDIS_URL: redis://redis:6379/0
+    volumes:
+      - blob-data:/app/blob
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker-engrave:
+    image: ${IMAGE}
+    command: celery -A backend.workers.celery_app worker -Q engrave -c 1 --loglevel=warning
+    restart: unless-stopped
+    environment:
+      OHSHEET_BLOB_ROOT: /app/blob
+      OHSHEET_REDIS_URL: redis://redis:6379/0
+    volumes:
+      - blob-data:/app/blob
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+
+volumes:
+  redis-data:
+  blob-data:
+  caddy-data:
+  caddy-config:

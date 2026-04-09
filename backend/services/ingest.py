@@ -64,7 +64,7 @@ def extract_youtube_id(url: str) -> str | None:
     return None
 
 
-def _download_youtube_sync(url: str, blob_store) -> RemoteAudioFile:
+def _download_youtube_sync(url: str, blob_store) -> tuple[RemoteAudioFile, str | None, str | None]:
     """Download audio from a YouTube URL via yt-dlp, store in blob_store.
 
     Returns a RemoteAudioFile pointing to the stored WAV.
@@ -133,7 +133,7 @@ def _download_youtube_sync(url: str, blob_store) -> RemoteAudioFile:
             duration_sec=duration,
             channels=2,
             content_hash=content_hash,
-        )
+        ), info.get("title"), info.get("uploader") or info.get("channel")
 
 
 def _file_path(uri: str) -> Path | None:
@@ -198,11 +198,18 @@ class IngestService:
         self._blob_store = blob_store
 
     async def run(self, payload: InputBundle) -> InputBundle:
+        log.info(
+            "ingest: start source=%s has_audio=%s has_midi=%s",
+            payload.metadata.source,
+            payload.audio is not None,
+            payload.midi is not None,
+        )
         audio = payload.audio
         midi = payload.midi
 
         # YouTube URL detection: if no audio/midi and title is a YouTube URL,
         # download the audio and attach it to the bundle.
+        metadata_update: dict = {}
         if (
             audio is None
             and midi is None
@@ -210,19 +217,41 @@ class IngestService:
             and payload.metadata.title is not None
             and is_youtube_url(payload.metadata.title)
         ):
-            audio = await asyncio.to_thread(
+            dl_result = await asyncio.to_thread(
                 _download_youtube_sync, payload.metadata.title, self._blob_store,
             )
+            audio, yt_title, yt_artist = dl_result
+            if yt_title:
+                metadata_update["title"] = yt_title
+            if yt_artist and not payload.metadata.artist:
+                metadata_update["artist"] = yt_artist
 
         if audio is not None:
             audio = await asyncio.to_thread(_probe_audio_sync, audio)
         if midi is not None:
             midi = await asyncio.to_thread(_probe_midi_sync, midi)
-        return payload.model_copy(update={
+
+        updated_metadata = payload.metadata
+        if metadata_update:
+            updated_metadata = payload.metadata.model_copy(update=metadata_update)
+
+        out = payload.model_copy(update={
             "schema_version": SCHEMA_VERSION,
             "audio": audio,
             "midi": midi,
+            "metadata": updated_metadata,
         })
+        if out.audio is not None:
+            log.info(
+                "ingest: audio probed duration_sec=%.2f sample_rate=%d channels=%d",
+                out.audio.duration_sec,
+                out.audio.sample_rate,
+                out.audio.channels,
+            )
+        if out.midi is not None:
+            log.info("ingest: midi probed ticks_per_beat=%d", out.midi.ticks_per_beat)
+        log.info("ingest: done")
+        return out
 
     # ---- bundle constructors -------------------------------------------------
 

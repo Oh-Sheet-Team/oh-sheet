@@ -16,29 +16,33 @@ FLUTTER      ?= flutter
 
 DART_DEFINE := $(if $(API_BASE_URL),--dart-define=API_BASE_URL=$(API_BASE_URL),)
 
-.PHONY: help install install-backend install-mt3 install-frontend backend frontend test test-backend lint typecheck clean require-flutter require-port-free
+.PHONY: help install install-backend install-basic-pitch install-demucs install-eval install-frontend backend frontend test test-backend test-e2e eval lint typecheck clean require-flutter require-port-free
 
 help:
 	@echo "Oh Sheet — make targets"
 	@echo ""
-	@echo "  make install            full install: backend + MT3 deps + flutter pub get"
-	@echo "  make install-backend    pip install -e .[dev]  (API only — TranscribeService"
-	@echo "                          will fall back to a 4-note stub without MT3)"
-	@echo "  make install-mt3        pip install -e .[mt3]  (torch + note-seq, ~2 GB)"
-	@echo "  make install-frontend   $(FLUTTER) pub get inside frontend/"
+	@echo "  make install              full install: backend + Basic Pitch deps + flutter pub get"
+	@echo "  make install-backend      pip install -e .[dev]  (API only — TranscribeService"
+	@echo "                            will fall back to a 4-note stub without Basic Pitch)"
+	@echo "  make install-basic-pitch  pip install -e .[basic-pitch]  (basic-pitch[onnx] + pretty_midi)"
+	@echo "  make install-demucs       pip install -e .[demucs]  (demucs + torch; opt-in stem split)"
+	@echo "  make install-eval         pip install -e .[eval]  (mir_eval for the offline eval harness)"
+	@echo "  make install-frontend     $(FLUTTER) pub get inside frontend/"
 	@echo ""
-	@echo "  make backend            run uvicorn dev server on $(HOST):$(PORT)"
+	@echo "  make backend            docker compose up (Redis + Celery workers + API on :8000)"
 	@echo "  make frontend           $(FLUTTER) run -d $(DEVICE) (override DEVICE=ios|android|macos|...)"
 	@echo "                          set API_BASE_URL=http://host:port to point at a non-default backend"
 	@echo "                          set FLUTTER=/path/to/flutter if the SDK is not on your PATH"
 	@echo ""
 	@echo "  make test               run backend pytest suite"
-	@echo "  make lint               $(FLUTTER) analyze"
+	@echo "  make eval               score TranscribeService on the eval/fixtures/clean_midi subset"
+	@echo "                          (requires .[basic-pitch] + .[eval] + fluidsynth on PATH)"
+	@echo "  make lint               ruff + $(FLUTTER) analyze"
 	@echo "  make clean              remove build artifacts and the local blob store"
 
 # ---- install ----------------------------------------------------------------
 
-install: install-backend install-mt3 install-frontend
+install: install-backend install-basic-pitch install-frontend
 
 require-flutter:
 	@if [ -x "$(FLUTTER)" ] || command -v "$(FLUTTER)" >/dev/null 2>&1; then \
@@ -54,8 +58,26 @@ require-flutter:
 install-backend:
 	pip install -e ".[dev]"
 
-install-mt3:
-	pip install -e ".[mt3]"
+install-basic-pitch:
+	pip install -e ".[basic-pitch]"
+	# basic-pitch 0.4.0 hard-codes tensorflow-macos as a base dep on
+	# Darwin+Python>3.11 (no wheels for 3.13), so install it with
+	# --no-deps and rely on [basic-pitch] above for the actual runtime
+	# deps. See pyproject.toml comment for details.
+	pip install --no-deps "basic-pitch>=0.4"
+
+install-demucs:
+	# Optional stem-separation stack (demucs + torch). Off by default;
+	# flip on via OHSHEET_DEMUCS_ENABLED=1. The htdemucs pretrained
+	# weights are CC BY-NC 4.0 — see pyproject.toml for the commercial
+	# caveat before enabling in production.
+	pip install -e ".[demucs]"
+
+install-eval:
+	# Offline eval harness — mir_eval only. Assumes ``.[basic-pitch]``
+	# is already installed (the harness drives the real TranscribeService
+	# to score). Does not install fluidsynth; that's a system binary.
+	pip install -e ".[eval]"
 
 install-frontend: require-flutter
 	cd $(FRONTEND) && $(FLUTTER) pub get
@@ -70,8 +92,8 @@ require-port-free:
 		exit 1; \
 	fi
 
-backend: require-port-free
-	uvicorn backend.main:app --reload --host $(HOST) --port $(PORT)
+backend:
+	docker compose up --build
 
 frontend: require-flutter
 	cd $(FRONTEND) && $(FLUTTER) run -d $(DEVICE) $(DART_DEFINE)
@@ -82,6 +104,18 @@ test: test-backend
 
 test-backend:
 	pytest
+
+test-e2e:
+	cd e2e && npx playwright test
+
+# Score TranscribeService end-to-end against the tracked clean_midi
+# subset at ``eval/fixtures/clean_midi/`` and write the full report
+# to ``eval-baseline.json``. Requires the ``.[basic-pitch]`` and
+# ``.[eval]`` extras plus ``fluidsynth`` on PATH (used to render the
+# ground-truth MIDIs to WAV for the audio-in transcriber).
+# See the script's module docstring for tuning / sampling options.
+eval:
+	python scripts/eval_transcription.py --out eval-baseline.json
 
 lint:
 	ruff check backend tests

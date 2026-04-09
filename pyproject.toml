@@ -6,6 +6,7 @@ requires-python = ">=3.10"
 license = { text = "Proprietary" }
 authors = [{ name = "Ross" }]
 dependencies = [
+    "ohsheet-shared @ file:shared",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "pydantic>=2.5",
@@ -13,11 +14,15 @@ dependencies = [
     "python-multipart>=0.0.9",
     "websockets>=12.0",
     "yt-dlp>=2024.1",
+    "celery[redis]>=5.3",
+    "pretty_midi>=0.2.10",
+    "music21>=9.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
     "httpx>=0.26",
     "ruff>=0.4",
@@ -30,19 +35,65 @@ youtube = [
 midi = [
     "mido>=1.3",
 ]
-# Pretrained MT3 baseline (backend.vendor.mr_mt3). Heavy ML deps — installed
-# only when you actually want to run the model. Without these the
-# TranscribeService falls back to a stub TranscriptionResult.
-mt3 = [
-    "torch>=2.1",
-    "torchaudio>=2.1",
-    "librosa>=0.10",
+# Basic Pitch transcription baseline. basic-pitch ships the ICASSP-2022
+# model weights inside the wheel, so there's no checkpoint to vendor.
+#
+# Heads-up on the `--no-deps` dance in the Makefile: basic-pitch 0.4.0 has
+# `tensorflow-macos>=2.4.1,<2.15.1` as a *base* dependency on Darwin when
+# python_version > '3.11', and tensorflow-macos has no wheels for Python
+# 3.13. So we install basic-pitch itself with `--no-deps` and pin its
+# actual runtime deps here instead. At import time basic-pitch auto-picks
+# the first available backend from coreml/tf/tflite/onnx, so with
+# coremltools + onnxruntime installed and tensorflow absent it falls
+# back to a CoreML or ONNX session without complaint.
+#
+# Without this extra the TranscribeService falls back to a stub
+# TranscriptionResult.
+basic-pitch = [
+    "coremltools; platform_system == 'Darwin'",
+    "librosa>=0.8.0",
     "numpy>=1.26",
-    "note-seq>=0.0.5",
-    "transformers>=4.40",
-    "einops>=0.7",
-    "tqdm>=4.66",
-    "absl-py>=2.0",
+    "onnxruntime>=1.19",
+    "pretty_midi>=0.2.10",
+    "resampy>=0.2.2,<0.4.3",
+    "scikit-learn",
+    "scipy>=1.4.1",
+    "typing_extensions",
+]
+# Offline eval harness (scripts/eval_transcription.py) — scores
+# TranscribeService output against clean_midi ground truth via
+# mir_eval. Eval-only, not imported by the backend runtime, so it
+# stays out of the production-facing [basic-pitch] extra.
+eval = [
+    "mir_eval>=0.6.0",
+]
+# Demucs source separation, used by TranscribeService when
+# OHSHEET_DEMUCS_ENABLED=1. Splits the input mix into
+# {drums, bass, other, vocals} stems and routes each stem to its
+# own Basic Pitch pass / chord-recognition / beat-tracking stage.
+#
+# License note: the ``demucs`` package itself is MIT, but the
+# default ``htdemucs`` pretrained weights (fetched on first use
+# from dl.fbaipublicfiles.com) are distributed under CC BY-NC 4.0
+# — non-commercial only. Commercial deployments must either train
+# their own weights, pick a commercially-licensed pretrained bag,
+# or swap in another separator. Stem separation is disabled by
+# default so the commercial risk is opt-in.
+#
+# Without this extra the TranscribeService falls back to the
+# single-mix Basic Pitch path regardless of ``demucs_enabled``.
+#
+# ``torchcrepe`` rides along here because it's gated on the same
+# torch install and its only consumer is ``crepe_melody`` running on
+# the Demucs vocals stem — shipping it in the ``demucs`` extra keeps
+# the two features installable as a single unit, which matches how
+# they're used at runtime. Model weights (~22 MB for ``full``) are
+# bundled inside the torchcrepe wheel so there's nothing to fetch.
+demucs = [
+    "demucs>=4.0",
+    "torch>=2.0",
+    "torchaudio>=2.0",
+    "torchcrepe>=0.0.22",
 ]
 
 [project.scripts]
@@ -52,23 +103,21 @@ ohsheet = "backend.main:run"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["backend"]
-# Ship the vendored MT3 checkpoint + config alongside the Python sources so
-# `pip install ohsheet[mt3]` produces a self-contained baseline transcriber.
-[tool.hatch.build.targets.wheel.force-include]
-"backend/vendor/mr_mt3/pretrained/mt3.pth" = "backend/vendor/mr_mt3/pretrained/mt3.pth"
-"backend/vendor/mr_mt3/config/mt3_config.json" = "backend/vendor/mr_mt3/config/mt3_config.json"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
 addopts = "--cov=backend --cov-report=term-missing --cov-report=xml"
+asyncio_mode = "auto"
 
 [tool.ruff]
 target-version = "py311"
 line-length = 120
-exclude = ["backend/vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "SIM"]
@@ -82,6 +131,9 @@ ignore = [
     "B905",    # zip strict — existing pattern
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"backend/contracts.py" = ["F401"]  # names re-exported for `from backend.contracts import …`
+
 [tool.mypy]
 python_version = "3.11"
 packages = ["backend"]
@@ -89,7 +141,6 @@ warn_return_any = false
 warn_unused_configs = true
 disallow_untyped_defs = false
 ignore_missing_imports = true
-exclude = ["backend/vendor"]
 
 [[tool.mypy.overrides]]
 module = "backend.services.engrave"

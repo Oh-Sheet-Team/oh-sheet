@@ -1,0 +1,90 @@
+name: Deploy to VM
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+  IMAGE: ${{ vars.GCP_REGION || 'us-central1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/oh-sheet/app
+  IMAGE_DECOMPOSER: ${{ vars.GCP_REGION || 'us-central1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/oh-sheet/decomposer
+  IMAGE_ASSEMBLER: ${{ vars.GCP_REGION || 'us-central1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/oh-sheet/assembler
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Authorize Docker push
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push container images
+        run: |
+          docker build -t ${{ env.IMAGE }}:${{ github.sha }} -t ${{ env.IMAGE }}:latest .
+          docker push ${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.IMAGE }}:latest
+
+          docker build -t ${{ env.IMAGE_DECOMPOSER }}:${{ github.sha }} -t ${{ env.IMAGE_DECOMPOSER }}:latest -f svc-decomposer/Dockerfile .
+          docker push ${{ env.IMAGE_DECOMPOSER }}:${{ github.sha }}
+          docker push ${{ env.IMAGE_DECOMPOSER }}:latest
+
+          docker build -t ${{ env.IMAGE_ASSEMBLER }}:${{ github.sha }} -t ${{ env.IMAGE_ASSEMBLER }}:latest -f svc-assembler/Dockerfile .
+          docker push ${{ env.IMAGE_ASSEMBLER }}:${{ github.sha }}
+          docker push ${{ env.IMAGE_ASSEMBLER }}:latest
+
+      - name: Deploy to VM
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+        run: |
+          # Set up SSH
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts
+
+          SSH="ssh -i ~/.ssh/deploy_key ${VM_USER}@${VM_HOST}"
+          SCP="scp -i ~/.ssh/deploy_key"
+
+          # Write .env with the image tag and commit SHA for docker compose
+          echo "IMAGE=${{ env.IMAGE }}:${{ github.sha }}" > /tmp/.env
+          echo "IMAGE_DECOMPOSER=${{ env.IMAGE_DECOMPOSER }}:${{ github.sha }}" >> /tmp/.env
+          echo "IMAGE_ASSEMBLER=${{ env.IMAGE_ASSEMBLER }}:${{ github.sha }}" >> /tmp/.env
+          echo "COMMIT_SHA=${{ github.sha }}" >> /tmp/.env
+
+          # Copy compose files to VM (SCP .env to temp name, then atomic mv)
+          $SCP docker-compose.prod.yml Caddyfile "${VM_USER}@${VM_HOST}:~/oh-sheet/"
+          $SCP /tmp/.env "${VM_USER}@${VM_HOST}:~/oh-sheet/.env.tmp"
+          $SSH "mv ~/oh-sheet/.env.tmp ~/oh-sheet/.env && mv ~/oh-sheet/docker-compose.prod.yml ~/oh-sheet/docker-compose.yml"
+
+          # Pull and restart
+          $SSH "cd ~/oh-sheet && sudo docker compose pull && sudo docker compose up -d --remove-orphans && sudo docker image prune -f"
+
+      - name: Verify deployment
+        env:
+          VM_HOST: ${{ vars.VM_HOST }}
+        run: |
+          sleep 15
+          curl -sf --retry 5 --retry-delay 5 "http://${VM_HOST}/v1/health" && echo "Health check passed" || echo "::warning::Health check did not pass yet"
