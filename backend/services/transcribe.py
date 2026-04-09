@@ -335,6 +335,36 @@ def _audio_path_from_uri(uri: str) -> Path:
     return Path(parsed.path)
 
 
+def _audio_duration_sec(path: Path) -> float | None:
+    """Return the duration of an audio file in seconds, or None on failure.
+
+    Used to clamp the Viterbi melody back-fill so synthesized notes can't
+    extend past the real end of the audio. Basic Pitch's contour tensor
+    is zero-padded past the audio end (the mel spectrogram is rounded up
+    to a model block size), and the back-fill tracer can otherwise pick
+    up low-salience runs in that padding and emit ghost notes beyond the
+    song. See :func:`_backfill_missed_melody_notes`.
+
+    ``soundfile`` is tried first because it reads headers only for WAV
+    (the Demucs stems format), avoiding a full decode. Failure falls
+    through to ``librosa.get_duration`` which handles m4a/mp3. Any
+    exception returns ``None`` so callers can proceed without clamping.
+    """
+    try:
+        import soundfile as sf  # noqa: PLC0415 — optional
+        info = sf.info(str(path))
+        if info.samplerate > 0:
+            return float(info.frames) / float(info.samplerate)
+    except Exception:  # noqa: BLE001 — fall through to librosa
+        pass
+    try:
+        import librosa  # noqa: PLC0415 — ships with the basic-pitch extra
+        return float(librosa.get_duration(path=str(path)))
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.debug("audio duration probe failed for %s: %s", path, exc)
+        return None
+
+
 def _serialize_pretty_midi(pm: Any) -> bytes | None:
     """Serialize a pretty_midi.PrettyMIDI to raw .mid bytes.
 
@@ -477,40 +507,82 @@ def _basic_pitch_single_pass(
     )
 
 
+def _rebuild_blob_midi(
+    events: list[NoteEvent],
+    *,
+    initial_bpm: float,
+) -> Any:
+    """Build a fresh pretty_midi from a flat event list for blob storage.
+
+    ``initial_bpm`` becomes the MIDI ``set_tempo`` meta-event on
+    track 0. basic-pitch's own ``note_events_to_midi`` hard-codes
+    120 BPM, which mismatches every piece of music that isn't at
+    120, and notation importers (MuseScore's MIDI wizard in
+    particular) treat the declared tempo as a hint and re-infer
+    metric structure from note density when it looks wrong —
+    occasionally landing on the wrong time signature in the
+    process. Wiring the librosa-derived tempo through here makes
+    the blob MIDI agree with its notes, so importers have no
+    reason to re-infer. Callers pass ``audio_tempo_map[0].bpm``
+    when available; the 120 default matches basic-pitch for the
+    (rare) case where beat tracking failed.
+
+    The time-signature meta event is also set explicitly — pretty_midi
+    would emit a default 4/4 anyway, but making it explicit documents
+    intent and keeps any future pretty_midi behavior change from
+    silently dropping the event.
+
+    Returns ``None`` on any failure (missing optional deps, empty
+    events, ``note_events_to_midi`` blowup) so callers can fall back
+    to a pre-existing pretty_midi without sinking blob persistence.
+    """
+    if not events:
+        return None
+    try:
+        import pretty_midi  # noqa: PLC0415 — optional dep
+        from basic_pitch.note_creation import note_events_to_midi  # noqa: PLC0415
+    except ImportError:
+        return None
+    try:
+        pm = note_events_to_midi(events, midi_tempo=initial_bpm)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.warning("note_events_to_midi rebuild failed: %s", exc)
+        return None
+    pm.time_signature_changes = [
+        pretty_midi.TimeSignature(numerator=4, denominator=4, time=0.0)
+    ]
+    return pm
+
+
 def _combined_midi_from_events(
     events_by_role: dict[InstrumentRole, list[NoteEvent]],
     fallback: Any,
+    *,
+    initial_bpm: float = 120.0,
 ) -> Any:
     """Build a single pretty_midi from the concatenated per-role events.
 
     Used on the Demucs path where we have three independent Basic
     Pitch passes (vocals / bass / other) and need *one* ``.mid``
-    artifact for blob storage. We flatten the per-role note lists and
-    run them through ``note_events_to_midi`` — the blob MIDI is a
-    debugging artifact, not authoritative, so collapsing the role
-    split there is fine (the contract ``TranscriptionResult`` keeps
-    the split intact).
+    artifact for blob storage. We flatten the per-role note lists
+    into time-sorted order and delegate to :func:`_rebuild_blob_midi`,
+    which handles the pretty_midi construction + tempo / TS meta
+    event wiring. The blob MIDI is a debugging artifact, not
+    authoritative, so collapsing the role split there is fine (the
+    contract ``TranscriptionResult`` keeps the split intact).
 
     On any failure we fall back to ``fallback`` (typically the last
     pretty_midi we produced in the loop) so blob persistence stays
     best-effort.
     """
-    try:
-        from basic_pitch.note_creation import note_events_to_midi  # noqa: PLC0415
-    except ImportError:
-        return fallback
-
     combined: list[NoteEvent] = []
     for events in events_by_role.values():
         combined.extend(events)
     if not combined:
         return fallback
     combined.sort(key=lambda e: (e[0], e[2]))
-    try:
-        return note_events_to_midi(combined)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("combined note_events_to_midi failed: %s", exc)
-        return fallback
+    pm = _rebuild_blob_midi(combined, initial_bpm=initial_bpm)
+    return pm if pm is not None else fallback
 
 
 def _run_without_stems(
@@ -529,6 +601,12 @@ def _run_without_stems(
     cleaned_events = pass_result.cleaned_events
     model_output = pass_result.model_output
     midi_data = pass_result.midi_data
+
+    # Audio duration is used to clamp the Viterbi melody back-fill so
+    # synthesized notes don't extend past the real end of the audio
+    # (see :func:`_backfill_missed_melody_notes`). Best-effort: ``None``
+    # leaves back-fill unclamped, which matches the pre-fix behaviour.
+    audio_duration_sec = _audio_duration_sec(audio_path)
 
     # Phase 2+3 post-processing — waveform-guided voice split via a
     # Viterbi path over ``model_output["contour"]``, then bass on the
@@ -561,6 +639,7 @@ def _run_without_stems(
             backfill_overlap_fraction=settings.melody_backfill_overlap_fraction,
             backfill_min_amp=settings.melody_backfill_min_amp,
             backfill_max_amp=settings.melody_backfill_max_amp,
+            max_time_sec=audio_duration_sec,
         )
 
     if settings.bass_extraction_enabled:
@@ -619,6 +698,23 @@ def _run_without_stems(
             chord_stats = ChordRecognitionStats(skipped=True)
             chord_stats.warnings.append(f"chord recognition failed: {exc}")
 
+    # Rebuild the blob MIDI so its ``set_tempo`` meta event matches the
+    # waveform-derived tempo. basic-pitch's own ``note_events_to_midi``
+    # hard-codes 120 BPM, which notation importers (MuseScore's MIDI
+    # wizard especially) treat as a hint and re-infer from note density
+    # when it contradicts the note pattern — occasionally landing on the
+    # wrong time signature in the process. Fall back to the BP-default
+    # ``midi_data`` on any rebuild failure so blob persistence stays
+    # best-effort.
+    initial_bpm = (
+        float(audio_tempo_map[0].bpm)
+        if audio_tempo_map
+        else 120.0
+    )
+    blob_midi = _rebuild_blob_midi(cleaned_events, initial_bpm=initial_bpm)
+    if blob_midi is None:
+        blob_midi = midi_data
+
     result = _pretty_midi_to_transcription_result(
         midi_data,
         events_by_role,
@@ -632,7 +728,7 @@ def _run_without_stems(
         chord_labels=chord_labels,
         stem_stats=stem_stats,
     )
-    midi_bytes = _serialize_pretty_midi(midi_data)
+    midi_bytes = _serialize_pretty_midi(blob_midi)
     return result, midi_bytes
 
 
@@ -656,10 +752,16 @@ def _run_with_stems(
     off drums-for-beats on material where Demucs drums is noisy, and
     let beat tracking fall back to the mix). When a stem is missing
     or its consumer returns empty, we fall back to the *original*
-    mixed audio for that stage — the Viterbi melody/bass extractors
-    stay off in this code path regardless, because their purpose is
-    to compensate for the single-mix Basic Pitch limitation the
-    stems already fix.
+    mixed audio for that stage.
+
+    The Phase-2 Viterbi **melody** extractor *does* run on this path
+    — but only on the vocals stem, using the vocals contour from
+    that stem's own Basic Pitch pass to re-score BP's vocals note
+    events (dropping octave ghosts / consonant false positives and
+    back-filling soft sustained notes the polyphonic tracker lost
+    under accompaniment bleed). The Phase-3 Viterbi **bass**
+    extractor stays off here because the bass stem already fixes
+    what it was compensating for in the single-mix path.
 
     Parallelism
     -----------
@@ -741,14 +843,19 @@ def _run_with_stems(
     def _run_stem(job: tuple[str, Path]) -> tuple[str, _BasicPitchPass | None]:
         label, stem_path = job
         try:
-            # ``keep_model_output=False`` lets each pass drop its
-            # ``contour`` tensor as soon as note extraction finishes.
-            # On the parallel path this matters twice: the three
-            # passes overlap in time (peak memory would otherwise
-            # carry three live contour matrices), and the stems path
-            # never consults ``model_output`` downstream because the
-            # Viterbi fallbacks are disabled here.
-            bp = _basic_pitch_single_pass(stem_path, keep_model_output=False)
+            # Keep ``model_output`` on the vocals stem so the Phase-2
+            # Viterbi melody extractor can re-score the BP vocals
+            # events against the vocals contour below. Bass / other
+            # drop it immediately: on the parallel path this matters
+            # twice, since the three passes overlap in time (peak
+            # memory would otherwise carry three live contour
+            # matrices), and neither of those two stems feeds a
+            # downstream ``model_output`` consumer — the bass
+            # Viterbi fallback stays disabled here because the bass
+            # stem already fixes what it was compensating for.
+            bp = _basic_pitch_single_pass(
+                stem_path, keep_model_output=(label == "vocals"),
+            )
         except Exception as exc:  # noqa: BLE001 — one bad stem must not sink the job
             log.warning("Basic Pitch failed on %s stem (%s): %s", label, stem_path, exc)
             return label, None
@@ -781,15 +888,82 @@ def _run_with_stems(
     bass_bp = per_stem_passes.get("bass")
     other_bp = per_stem_passes.get("other")
 
-    # MELODY precedence: CREPE > Basic-Pitch-on-vocals. The two are
-    # mutually exclusive (CREPE success keeps vocals out of stem_jobs
-    # above), but checking both defensively keeps the assignment
-    # site readable and survives any future refactor that re-enables
-    # simultaneous Basic Pitch passes for A/B comparison.
+    # MELODY precedence: CREPE > Viterbi-augmented Basic-Pitch-on-vocals
+    # > raw Basic-Pitch-on-vocals. CREPE and Basic Pitch are mutually
+    # exclusive (CREPE success keeps vocals out of stem_jobs above),
+    # but checking both defensively keeps the assignment site readable
+    # and survives any future refactor that re-enables simultaneous
+    # Basic Pitch passes for A/B comparison.
+    #
+    # When Basic Pitch ran on the vocals stem, we run the Phase-2
+    # Viterbi extractor in *additive-only* mode (``split_enabled=False``)
+    # over the vocals contour. The per-stem ``cleanup_note_events``
+    # pass has already dropped octave ghosts / consonant false
+    # positives, so the Viterbi's role here is strictly to *add* soft
+    # sustained notes BP missed under light accompaniment bleed — not
+    # to re-filter. The earlier implementation also re-routed the
+    # split's "chords" bucket into oblivion on this path, silently
+    # dropping legitimate vocal harmonies / ornaments whenever the
+    # main melodic Viterbi line rejected them.
+    #
+    # ``max_time_sec=vocals_duration_sec`` clamps back-filled notes to
+    # the real end of the vocals stem. Basic Pitch's contour is
+    # zero-padded past the audio end (block-size alignment) and the
+    # tracer can otherwise emit a multi-second "note" in the padding.
+    #
+    # Any failure or empty Viterbi output falls through to the raw
+    # BP events so the stems path never *loses* a melody track to
+    # this pass.
+    melody_stats: MelodyExtractionStats | None = None
     if crepe_owns_melody:
         events_by_role[InstrumentRole.MELODY] = crepe_events
     elif vocals_bp is not None and vocals_bp.cleaned_events:
-        events_by_role[InstrumentRole.MELODY] = vocals_bp.cleaned_events
+        vocals_melody_events = vocals_bp.cleaned_events
+        vocals_contour = vocals_bp.model_output.get("contour")
+        vocals_duration_sec: float | None = None
+        if stems.vocals is not None:
+            vocals_duration_sec = _audio_duration_sec(stems.vocals)
+        if settings.melody_extraction_enabled and vocals_contour is not None:
+            try:
+                extracted, _chords, melody_stats = extract_melody(
+                    vocals_contour,
+                    vocals_bp.cleaned_events,
+                    melody_low_midi=settings.melody_low_midi,
+                    melody_high_midi=settings.melody_high_midi,
+                    voicing_floor=settings.melody_voicing_floor,
+                    transition_weight=settings.melody_transition_weight,
+                    max_transition_bins=settings.melody_max_transition_bins,
+                    match_fraction=settings.melody_match_fraction,
+                    backfill_enabled=settings.melody_backfill_enabled,
+                    backfill_min_duration_sec=settings.melody_backfill_min_duration_sec,
+                    backfill_overlap_fraction=settings.melody_backfill_overlap_fraction,
+                    backfill_min_amp=settings.melody_backfill_min_amp,
+                    backfill_max_amp=settings.melody_backfill_max_amp,
+                    max_time_sec=vocals_duration_sec,
+                    split_enabled=False,
+                )
+            except Exception as exc:  # noqa: BLE001 — never let Viterbi sink transcribe
+                log.warning("vocals-stem melody Viterbi raised: %s", exc)
+            else:
+                # Only promote the Viterbi output when it actually
+                # ran and found voiced content. ``skipped=True``
+                # means numpy/contour-shape issues; an empty
+                # ``extracted`` with no skip means the path was
+                # entirely unvoiced — either way, fall back to the
+                # raw BP events rather than silently drop the track.
+                # (``_chords`` is always ``[]`` in ``split_enabled=False``
+                # mode — the split step is bypassed — but we still
+                # unpack the triple to keep the call site honest
+                # about the public ``extract_melody`` return shape.)
+                del _chords
+                if not melody_stats.skipped and extracted:
+                    vocals_melody_events = extracted
+        # Release the contour reference now that the Viterbi is done
+        # with it — mirrors the ``keep_model_output=False`` memory
+        # optimization for the bass/other stems so the vocals
+        # contour tensor can be GC'd before the result is built.
+        vocals_bp.model_output.clear()
+        events_by_role[InstrumentRole.MELODY] = vocals_melody_events
     if bass_bp is not None and bass_bp.cleaned_events:
         events_by_role[InstrumentRole.BASS] = bass_bp.cleaned_events
     if other_bp is not None and other_bp.cleaned_events:
@@ -865,7 +1039,19 @@ def _run_with_stems(
     # explicit binding is for type narrowing.
     representative_pass: _BasicPitchPass | None = other_bp or bass_bp or vocals_bp
     fallback_midi = representative_pass.midi_data if representative_pass else None
-    combined_midi = _combined_midi_from_events(events_by_role, fallback_midi)
+    # Use the librosa-derived tempo for the blob MIDI's ``set_tempo``
+    # meta event so the declared tempo agrees with the notes. Without
+    # this, basic-pitch.mid lands on a hard-coded 120 BPM and
+    # MuseScore's import wizard re-infers tempo (and occasionally
+    # time signature) from note density — see :func:`_rebuild_blob_midi`.
+    initial_bpm = (
+        float(audio_tempo_map[0].bpm)
+        if audio_tempo_map
+        else 120.0
+    )
+    combined_midi = _combined_midi_from_events(
+        events_by_role, fallback_midi, initial_bpm=initial_bpm,
+    )
 
     # ``model_output`` is intentionally empty on the stems path. The
     # ``_pretty_midi_to_transcription_result`` consumer only reads it
@@ -884,7 +1070,7 @@ def _run_with_stems(
         tempo_map_override=audio_tempo_map,
         preprocess_stats=None,  # surfaced per-stem below
         cleanup_stats=None,     # surfaced per-stem below
-        melody_stats=None,      # Viterbi split is skipped on the stems path
+        melody_stats=melody_stats,
         bass_stats=None,
         chord_stats=chord_stats,
         chord_labels=chord_labels,

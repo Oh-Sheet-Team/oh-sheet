@@ -358,6 +358,139 @@ def test_backfill_does_not_invent_notes_below_melody_band():
 
 
 # ---------------------------------------------------------------------------
+# Back-fill clamping against ``max_time_sec``
+# ---------------------------------------------------------------------------
+
+def test_backfill_skips_runs_that_start_past_max_time_sec():
+    # 500 ms contour with a stable painted peak from 250 ms to 450 ms.
+    # The real audio is only 200 ms long (the rest is BP's contour
+    # padding), so the run starts *after* the audio ends and must be
+    # dropped entirely — otherwise the back-fill invents a ghost note
+    # in silence past the song. This is the regression the stems-path
+    # bug surfaced: a 1.5s phantom note at the end of ``basic-pitch.mid``.
+    frames = int(round(0.50 * FRAME_RATE_HZ))
+    c = _blank_contour(frames)
+    run_start = int(round(0.25 * FRAME_RATE_HZ))
+    run_end = int(round(0.45 * FRAME_RATE_HZ))
+    _paint(c, run_start, run_end, 67, salience=0.9)
+
+    melody, _, stats = extract_melody(c, [], max_time_sec=0.20)
+    assert stats.backfilled_note_count == 0
+    assert melody == []
+
+
+def test_backfill_truncates_runs_straddling_max_time_sec():
+    # Run from 100 ms to 400 ms, but the audio only lasts 250 ms.
+    # The back-fill must keep the note (start is inside the audio)
+    # but clamp its ``end`` to ``max_time_sec``.
+    frames = int(round(0.50 * FRAME_RATE_HZ))
+    c = _blank_contour(frames)
+    run_start = int(round(0.10 * FRAME_RATE_HZ))
+    run_end = int(round(0.40 * FRAME_RATE_HZ))
+    _paint(c, run_start, run_end, 67, salience=0.9)
+
+    melody, _, stats = extract_melody(c, [], max_time_sec=0.25)
+    assert stats.backfilled_note_count == 1
+    start, end, pitch, _amp, _bends = melody[0]
+    assert pitch == 67
+    assert start == pytest.approx(0.10, abs=0.02)
+    assert end == pytest.approx(0.25, abs=1e-9)
+
+
+def test_backfill_drops_straddling_run_when_clamp_leaves_too_little():
+    # Run from 100 ms to 400 ms at ``max_time_sec=0.18``. The clamped
+    # duration (~80 ms) is below the 120 ms ``min_duration_sec`` floor,
+    # so the note must be dropped entirely — a straddling run with
+    # only a sliver in the valid window isn't worth synthesizing.
+    frames = int(round(0.50 * FRAME_RATE_HZ))
+    c = _blank_contour(frames)
+    run_start = int(round(0.10 * FRAME_RATE_HZ))
+    run_end = int(round(0.40 * FRAME_RATE_HZ))
+    _paint(c, run_start, run_end, 67, salience=0.9)
+
+    melody, _, stats = extract_melody(c, [], max_time_sec=0.18)
+    assert stats.backfilled_note_count == 0
+    assert melody == []
+
+
+def test_backfill_without_max_time_sec_preserves_legacy_behavior():
+    # Belt-and-suspenders: when ``max_time_sec`` is None (the default)
+    # the clamp is inert and back-fill behaves exactly as it did
+    # before the fix — synthesizing a note over the full painted run.
+    frames = int(round(0.35 * FRAME_RATE_HZ))
+    c = _blank_contour(frames)
+    _paint(c, 0, int(round(0.30 * FRAME_RATE_HZ)), 67, salience=0.9)
+
+    melody, _, stats = extract_melody(c, [])
+    assert stats.backfilled_note_count == 1
+    start, end, _, _, _ = melody[0]
+    assert 0.25 <= (end - start) <= 0.35
+
+
+# ---------------------------------------------------------------------------
+# ``split_enabled=False`` — additive-only mode for the stems path
+# ---------------------------------------------------------------------------
+
+def test_split_enabled_false_keeps_all_input_events_as_melody():
+    # Painted peak at MIDI 60 throughout the contour, but the caller
+    # passes events at MIDI 72 (which would go to ``chords`` in the
+    # default split mode — the path disagrees with the event pitch).
+    # With ``split_enabled=False`` the event must be kept in melody
+    # and ``chords`` must be empty. Back-fill is off so the assertion
+    # isolates the split bypass.
+    c = _blank_contour(int(1.1 * FRAME_RATE_HZ))
+    _paint(c, 0, int(FRAME_RATE_HZ), 60)
+    events = [_ne(0.0, 1.0, 72)]
+
+    melody, chords, stats = extract_melody(
+        c, events, backfill_enabled=False, split_enabled=False,
+    )
+    assert melody == events
+    assert chords == []
+    assert stats.melody_note_count == 1
+    assert stats.chord_note_count == 0
+
+
+def test_split_enabled_false_still_runs_backfill_against_all_events():
+    # Contour has a stable MIDI 67 peak for 300 ms. The caller passes
+    # a single MIDI 72 event — under the default split semantics that
+    # would go to chords, and back-fill would synthesize a MIDI 67
+    # note because no *melody* event overlaps it. In ``split_enabled=
+    # False`` mode the MIDI 72 event is kept in melody, and back-fill
+    # still runs against the full event list — the 67 peak doesn't
+    # match the 72 event (different pitch), so the synthesized note
+    # is still added. End state: two melody notes, no chords.
+    frames = int(round(0.35 * FRAME_RATE_HZ))
+    c = _blank_contour(frames)
+    _paint(c, 0, int(round(0.30 * FRAME_RATE_HZ)), 67, salience=0.9)
+    events = [_ne(0.0, 0.30, 72)]
+
+    melody, chords, stats = extract_melody(c, events, split_enabled=False)
+    pitches = sorted(e[2] for e in melody)
+    assert pitches == [67, 72]
+    assert chords == []
+    assert stats.backfilled_note_count == 1
+
+
+def test_split_enabled_false_backfill_still_skips_duplicates():
+    # When ``split_enabled=False`` passes all events through,
+    # back-fill's overlap check sees the full list — so a synthesized
+    # run that would duplicate an existing event at the same pitch
+    # must still be suppressed. This is the reason the split bypass
+    # exists in ``extract_melody`` itself rather than via a separate
+    # ``backfill_only`` helper that only sees the melody subset.
+    frames = int(round(0.35 * FRAME_RATE_HZ))
+    c = _blank_contour(frames)
+    _paint(c, 0, int(round(0.30 * FRAME_RATE_HZ)), 67, salience=0.9)
+    events = [_ne(0.0, 0.30, 67, amp=0.8)]
+
+    melody, _, stats = extract_melody(c, events, split_enabled=False)
+    assert stats.backfilled_note_count == 0
+    assert len(melody) == 1
+    assert melody[0][3] == 0.8  # original amplitude preserved
+
+
+# ---------------------------------------------------------------------------
 # Config defaults sanity check
 # ---------------------------------------------------------------------------
 
