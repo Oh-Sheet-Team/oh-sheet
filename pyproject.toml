@@ -67,10 +67,18 @@ basic-pitch = [
 #
 # Without this extra the TranscribeService falls back to the
 # single-mix Basic Pitch path regardless of ``demucs_enabled``.
+#
+# ``torchcrepe`` rides along here because it's gated on the same
+# torch install and its only consumer is ``crepe_melody`` running on
+# the Demucs vocals stem — shipping it in the ``demucs`` extra keeps
+# the two features installable as a single unit, which matches how
+# they're used at runtime. Model weights (~22 MB for ``full``) are
+# bundled inside the torchcrepe wheel so there's nothing to fetch.
 demucs = [
     "demucs>=4.0",
     "torch>=2.0",
     "torchaudio>=2.0",
+    "torchcrepe>=0.0.22",
 ]
 
 [project.scripts]

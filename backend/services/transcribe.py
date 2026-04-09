@@ -57,6 +57,10 @@ from backend.services.chord_recognition import (
     ChordRecognitionStats,
     recognize_chords,
 )
+from backend.services.crepe_melody import (
+    CrepeMelodyStats,
+    extract_vocal_melody_crepe,
+)
 from backend.services.melody_extraction import (
     MelodyExtractionStats,
     extract_melody,
@@ -132,6 +136,7 @@ def _pretty_midi_to_transcription_result(
     stem_stats: StemSeparationStats | None = None,
     per_stem_preprocess_stats: dict[str, PreprocessStats] | None = None,
     per_stem_cleanup_stats: dict[str, CleanupStats] | None = None,
+    crepe_melody_stats: CrepeMelodyStats | None = None,
 ) -> TranscriptionResult:
     """Convert Basic Pitch's output into our pydantic TranscriptionResult.
 
@@ -255,6 +260,8 @@ def _pretty_midi_to_transcription_result(
         warnings.extend(bass_stats.as_warnings())
     if chord_stats is not None:
         warnings.extend(chord_stats.as_warnings())
+    if crepe_melody_stats is not None:
+        warnings.extend(crepe_melody_stats.as_warnings())
     if total_notes < 20:
         warnings.append(f"Low note count ({total_notes}) — possible quality issue")
     quality = QualitySignal(
@@ -679,12 +686,52 @@ def _run_with_stems(
     per_stem_cleanup_stats: dict[str, CleanupStats] = {}
     per_stem_passes: dict[str, _BasicPitchPass] = {}
 
+    # Try CREPE on the vocals stem first. If it returns events, it
+    # owns MELODY and the Basic Pitch vocals pass is skipped entirely
+    # — CREPE is SOTA for monophonic singing F0 and Basic Pitch adds
+    # noise more than signal on this stem (see crepe_melody.py
+    # module docstring). If CREPE is disabled or fails, we fall
+    # through to the legacy Basic Pitch vocals path.
+    crepe_events: list[NoteEvent] = []
+    crepe_stats: CrepeMelodyStats | None = None
+    if (
+        settings.crepe_vocal_melody_enabled
+        and settings.demucs_use_vocals_for_melody
+        and stems.vocals is not None
+    ):
+        try:
+            crepe_events, crepe_stats = extract_vocal_melody_crepe(
+                stems.vocals,
+                model=settings.crepe_model,
+                hop_length_samples=settings.crepe_hop_length_samples,
+                fmin_hz=settings.crepe_fmin_hz,
+                fmax_hz=settings.crepe_fmax_hz,
+                voicing_threshold=settings.crepe_voicing_threshold,
+                median_filter_frames=settings.crepe_median_filter_frames,
+                min_note_duration_sec=settings.crepe_min_note_duration_sec,
+                merge_gap_sec=settings.crepe_merge_gap_sec,
+                amp_min=settings.crepe_amp_min,
+                amp_max=settings.crepe_amp_max,
+                device=settings.crepe_device,
+            )
+        except Exception as exc:  # noqa: BLE001 — CREPE must not sink transcribe
+            log.warning("crepe vocal melody raised: %s", exc)
+            crepe_events = []
+            crepe_stats = CrepeMelodyStats(skipped=True)
+            crepe_stats.warnings.append(f"crepe-melody: exception: {exc}")
+    crepe_owns_melody = bool(crepe_events)
+
     # Build the list of stems we actually need to run Basic Pitch on,
     # honoring the per-consumer escape hatches. An absent stem (e.g.
     # a 2-source bag that didn't emit vocals) naturally drops out
-    # here too.
+    # here too. Vocals are skipped when CREPE already supplied the
+    # melody track.
     stem_jobs: list[tuple[str, Path]] = []
-    if settings.demucs_use_vocals_for_melody and stems.vocals is not None:
+    if (
+        settings.demucs_use_vocals_for_melody
+        and stems.vocals is not None
+        and not crepe_owns_melody
+    ):
         stem_jobs.append(("vocals", stems.vocals))
     if settings.demucs_use_bass_stem and stems.bass is not None:
         stem_jobs.append(("bass", stems.bass))
@@ -734,7 +781,14 @@ def _run_with_stems(
     bass_bp = per_stem_passes.get("bass")
     other_bp = per_stem_passes.get("other")
 
-    if vocals_bp is not None and vocals_bp.cleaned_events:
+    # MELODY precedence: CREPE > Basic-Pitch-on-vocals. The two are
+    # mutually exclusive (CREPE success keeps vocals out of stem_jobs
+    # above), but checking both defensively keeps the assignment
+    # site readable and survives any future refactor that re-enables
+    # simultaneous Basic Pitch passes for A/B comparison.
+    if crepe_owns_melody:
+        events_by_role[InstrumentRole.MELODY] = crepe_events
+    elif vocals_bp is not None and vocals_bp.cleaned_events:
         events_by_role[InstrumentRole.MELODY] = vocals_bp.cleaned_events
     if bass_bp is not None and bass_bp.cleaned_events:
         events_by_role[InstrumentRole.BASS] = bass_bp.cleaned_events
@@ -837,6 +891,7 @@ def _run_with_stems(
         stem_stats=stem_stats,
         per_stem_preprocess_stats=per_stem_preprocess_stats,
         per_stem_cleanup_stats=per_stem_cleanup_stats,
+        crepe_melody_stats=crepe_stats,
     )
     midi_bytes = _serialize_pretty_midi(combined_midi) if combined_midi else None
     return result, midi_bytes

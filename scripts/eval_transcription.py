@@ -183,13 +183,23 @@ def _cache_key(midi_path: Path, max_duration: float, soundfont: Path) -> str:
 
 
 def _truncate_midi(midi_path: Path, max_duration: float | None) -> Any:
-    """Load ``midi_path`` and drop every note that starts past ``max_duration``.
+    """Load ``midi_path`` and drop every event past ``max_duration``.
 
     Returns a ``pretty_midi.PrettyMIDI`` object with the truncated note
     lists so the caller can both (a) write a shortened .mid for
     fluidsynth and (b) read notes back for ground-truth scoring. We
     also trim the tail of any note that straddles the cutoff so the
     synthesized WAV and the scoring arrays agree on where audio ends.
+
+    Subtlety: notes aren't the only per-instrument events pretty_midi
+    tracks. ``control_changes``, ``pitch_bends``, and ``pedal_events``
+    also carry timestamps, and fluidsynth will happily render past
+    the last note if any of those linger in the 30-second-plus range
+    (``pm.get_end_time()`` returns the max of all of them). Leaving
+    them unpruned produced 200-second WAVs from 30-second sampling
+    calls during the first baseline run. We truncate every timestamped
+    event class pretty_midi exposes so fluidsynth stops exactly where
+    we intended.
 
     ``max_duration=None`` is a no-op — returns the full MIDI unchanged.
     """
@@ -198,14 +208,35 @@ def _truncate_midi(midi_path: Path, max_duration: float | None) -> Any:
     if max_duration is None or max_duration <= 0:
         return pm
     for inst in pm.instruments:
-        kept = []
+        kept_notes = []
         for n in inst.notes:
             if n.start >= max_duration:
                 continue
             if n.end > max_duration:
                 n.end = max_duration
-            kept.append(n)
-        inst.notes = kept
+            kept_notes.append(n)
+        inst.notes = kept_notes
+        inst.control_changes = [
+            cc for cc in inst.control_changes if cc.time < max_duration
+        ]
+        inst.pitch_bends = [
+            pb for pb in inst.pitch_bends if pb.time < max_duration
+        ]
+    # Track-level meta events also count toward ``pm.get_end_time()``,
+    # and fluidsynth honors the end-of-track marker when deciding how
+    # much silence to render after the last note. Lyric/karaoke files
+    # (e.g. ``Celine Dion/Power of Love``) stash 300+ ``text_events``
+    # at the real playback times, which kept synthesis going for the
+    # full song despite every note ending at 30s. Scrubbing these
+    # caps the MIDI at ``max_duration`` regardless of source format.
+    pm.lyrics = [lyr for lyr in pm.lyrics if lyr.time < max_duration]
+    pm.text_events = [te for te in pm.text_events if te.time < max_duration]
+    pm.time_signature_changes = [
+        ts for ts in pm.time_signature_changes if ts.time < max_duration
+    ]
+    pm.key_signature_changes = [
+        ks for ks in pm.key_signature_changes if ks.time < max_duration
+    ]
     return pm
 
 
@@ -215,6 +246,7 @@ def _synthesize(
     out_wav: Path,
     sample_rate: int,
     fluidsynth_bin: str,
+    max_duration: float | None,
 ) -> None:
     """Synthesize a PrettyMIDI to WAV via ``fluidsynth``.
 
@@ -223,6 +255,17 @@ def _synthesize(
     ``-ni`` runs non-interactively (no shell), ``-g 1.0`` sets master
     gain to unity so the output isn't clipped or whispered, and
     ``-F out.wav`` is the standard fast-render flag.
+
+    If ``max_duration`` is set, we hard-clip the rendered WAV to that
+    duration as a belt-and-suspenders safety net. ``_truncate_midi``
+    handles most files cleanly, but pretty_midi doesn't expose tempo
+    changes as a mutable list (they live in ``_tick_scales`` at the
+    MIDI tick level), so karaoke / multi-tempo arrangements with
+    tempo events past the cutoff still produce MIDIs whose
+    ``pm.get_end_time()`` walks to the original track length.
+    fluidsynth then renders silence all the way to that marker. The
+    post-hoc clip catches these files without reaching into
+    pretty_midi internals.
 
     On failure, stderr from fluidsynth is surfaced in the raised
     exception — it's usually self-explanatory (missing soundfont, bad
@@ -254,6 +297,17 @@ def _synthesize(
     finally:
         tmp_path.unlink(missing_ok=True)
 
+    # Hard-clip the rendered WAV to max_duration if needed. soundfile
+    # round-trip is cheap (~10 ms for a 30 s clip) and guarantees the
+    # cached audio matches the ground-truth window exactly.
+    if max_duration is not None and max_duration > 0:
+        import soundfile as sf  # noqa: PLC0415
+
+        data, sr = sf.read(str(out_wav))
+        max_samples = int(max_duration * sr)
+        if len(data) > max_samples:
+            sf.write(str(out_wav), data[:max_samples], sr)
+
 
 def _ensure_synthesized(
     midi_path: Path,
@@ -275,7 +329,9 @@ def _ensure_synthesized(
     key = _cache_key(midi_path, max_duration or 0.0, soundfont)
     out_wav = cache_dir / f"{key}.wav"
     if not out_wav.is_file():
-        _synthesize(pm, soundfont, out_wav, sample_rate, fluidsynth_bin)
+        _synthesize(
+            pm, soundfont, out_wav, sample_rate, fluidsynth_bin, max_duration,
+        )
     assert isinstance(pm, pretty_midi.PrettyMIDI)
     return out_wav, pm
 
