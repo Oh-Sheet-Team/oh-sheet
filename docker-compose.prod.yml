@@ -15,7 +15,7 @@ services:
       retries: 5
 
   orchestrator:
-    build: .
+    image: ${IMAGE}
     command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 2
     restart: unless-stopped
     ports:
@@ -37,7 +37,7 @@ services:
       start_period: 10s
 
   worker-ingest:
-    build: .
+    image: ${IMAGE}
     command: celery -A backend.workers.celery_app worker -Q ingest -c 1 --loglevel=warning
     restart: unless-stopped
     environment:
@@ -50,7 +50,7 @@ services:
         condition: service_healthy
 
   worker-transcribe:
-    build: .
+    image: ${IMAGE}
     command: celery -A backend.workers.celery_app worker -Q transcribe -c 1 --loglevel=warning
     restart: unless-stopped
     environment:
@@ -63,7 +63,7 @@ services:
         condition: service_healthy
 
   worker-arrange:
-    build: .
+    image: ${IMAGE}
     command: celery -A backend.workers.celery_app worker -Q arrange -c 1 --loglevel=warning
     restart: unless-stopped
     environment:
@@ -76,9 +76,7 @@ services:
         condition: service_healthy
 
   worker-decomposer:
-    build:
-      context: .
-      dockerfile: svc-decomposer/Dockerfile
+    image: ${IMAGE_DECOMPOSER}
     restart: unless-stopped
     environment:
       OHSHEET_BLOB_ROOT: /app/blob
@@ -90,9 +88,7 @@ services:
         condition: service_healthy
 
   worker-assembler:
-    build:
-      context: .
-      dockerfile: svc-assembler/Dockerfile
+    image: ${IMAGE_ASSEMBLER}
     restart: unless-stopped
     environment:
       OHSHEET_BLOB_ROOT: /app/blob
@@ -104,7 +100,7 @@ services:
         condition: service_healthy
 
   worker-humanize:
-    build: .
+    image: ${IMAGE}
     command: celery -A backend.workers.celery_app worker -Q humanize -c 1 --loglevel=warning
     restart: unless-stopped
     environment:
@@ -117,7 +113,7 @@ services:
         condition: service_healthy
 
   worker-engrave:
-    build: .
+    image: ${IMAGE}
     command: celery -A backend.workers.celery_app worker -Q engrave -c 1 --loglevel=warning
     restart: unless-stopped
     environment:
@@ -129,6 +125,22 @@ services:
       redis:
         condition: service_healthy
 
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+
 volumes:
   redis-data:
   blob-data:
+  caddy-data:
+  caddy-config:
