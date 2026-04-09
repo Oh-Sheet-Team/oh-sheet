@@ -23,6 +23,7 @@ services:
     environment:
       OHSHEET_BLOB_ROOT: /app/blob
       OHSHEET_REDIS_URL: redis://redis:6379/0
+      COMMIT_SHA: ${COMMIT_SHA:-unknown}
     volumes:
       - blob-data:/app/blob
     depends_on:

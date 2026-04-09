@@ -58,8 +58,9 @@ jobs:
           SSH="ssh -i ~/.ssh/deploy_key ${VM_USER}@${VM_HOST}"
           SCP="scp -i ~/.ssh/deploy_key"
 
-          # Write .env with the image tag for docker compose
+          # Write .env with the image tag and commit SHA for docker compose
           echo "IMAGE=${{ env.IMAGE }}:${{ github.sha }}" > /tmp/.env
+          echo "COMMIT_SHA=${{ github.sha }}" >> /tmp/.env
 
           # Copy compose files to VM (SCP .env to temp name, then atomic mv)
           $SCP docker-compose.prod.yml Caddyfile "${VM_USER}@${VM_HOST}:~/oh-sheet/"
