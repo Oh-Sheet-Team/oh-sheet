@@ -62,3 +62,28 @@ async def test_full_pipeline_via_celery(runner):
 
     stage_names = [e.stage for e in events if e.type == "stage_completed"]
     assert stage_names == ["ingest", "transcribe", "arrange", "humanize", "engrave"]
+
+
+@pytest.mark.asyncio
+async def test_transcription_midi_uri_survives_pipeline(runner):
+    """transcription_midi_uri set by the decomposer must appear on the final EngravedOutput."""
+    bundle = InputBundle(
+        audio=RemoteAudioFile(
+            uri="file:///fake/audio.wav",
+            format="wav",
+            sample_rate=44100,
+            duration_sec=10.0,
+            channels=1,
+        ),
+        metadata=InputMetadata(title="MIDI URI Test", artist="Tester", source="audio_upload"),
+    )
+    config = PipelineConfig(variant="audio_upload")
+
+    result = await runner.run(
+        job_id="test-midi-uri-001",
+        bundle=bundle,
+        config=config,
+    )
+
+    assert result.transcription_midi_uri is not None
+    assert "basic-pitch.mid" in result.transcription_midi_uri

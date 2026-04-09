@@ -47,6 +47,12 @@ def _decomposer_run(job_id: str, payload_uri: str) -> str:
     raw = blob.get_json(payload_uri)
     InputBundle.model_validate(raw)
 
+    # Persist a fake transcription MIDI so the URI survives through the pipeline
+    midi_uri = blob.put_bytes(
+        f"jobs/{job_id}/transcription/basic-pitch.mid",
+        b"MThd\x00\x00\x00\x06\x00\x00\x00\x00\x00\x00",
+    )
+
     result = TranscriptionResult(
         schema_version=SCHEMA_VERSION,
         midi_tracks=[
@@ -73,6 +79,7 @@ def _decomposer_run(job_id: str, payload_uri: str) -> str:
             overall_confidence=0.3,
             warnings=["conftest stub — real transcription not wired"],
         ),
+        transcription_midi_uri=midi_uri,
     )
 
     output_uri = blob.put_json(

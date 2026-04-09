@@ -309,6 +309,7 @@ class EngravedOutput(BaseModel):
     musicxml_uri: str
     humanized_midi_uri: str
     audio_preview_uri: str | None = None
+    transcription_midi_uri: str | None = None
 
 
 # ---------------------------------------------------------------------------
