@@ -414,13 +414,13 @@ def test_run_with_stems_all_empty_falls_back_to_single_mix(
 def test_run_with_stems_runs_viterbi_on_vocals_contour(
     monkeypatch, tmp_path, stub_audio_helpers,
 ):
-    """When the vocals pass carries a contour, ``extract_melody`` runs.
+    """When the vocals pass carries a contour, ``backfill_melody_notes`` runs.
 
     This is the "Viterbi-on-stems" wiring: the vocals stem's Basic
     Pitch pass keeps ``model_output`` alive, and we re-score its
     note events against the vocals contour via the Phase-2 Viterbi
-    extractor before routing them to MELODY. The bass/other stems
-    are still routed raw — only vocals gets the rescoring.
+    back-fill wrapper before routing them to MELODY. The bass/other
+    stems are still routed raw — only vocals gets the rescoring.
     """
     import numpy as np
 
@@ -431,8 +431,8 @@ def test_run_with_stems_runs_viterbi_on_vocals_contour(
 
     # Fake vocals contour: shape (T, N_CONTOUR_BINS) of zeros. The
     # real extractor is monkeypatched below, so the contents don't
-    # matter — what matters is that ``extract_melody`` receives the
-    # same numpy array we planted on the vocals ``_BasicPitchPass``.
+    # matter — what matters is that ``backfill_melody_notes`` receives
+    # the same numpy array we planted on the vocals ``_BasicPitchPass``.
     fake_contour = np.zeros((20, melody_mod.N_CONTOUR_BINS), dtype=np.float32)
 
     def fake_pass(stem_path: Path, *, keep_model_output: bool = True):
@@ -447,7 +447,7 @@ def test_run_with_stems_runs_viterbi_on_vocals_contour(
     viterbi_event = (0.1, 0.4, 74, 0.4, None)
     captured: dict[str, Any] = {}
 
-    def fake_extract_melody(contour, note_events, **kwargs):
+    def fake_backfill_melody_notes(contour, note_events, **kwargs):
         captured["contour"] = contour
         captured["note_events"] = list(note_events)
         captured["kwargs"] = kwargs
@@ -457,9 +457,11 @@ def test_run_with_stems_runs_viterbi_on_vocals_contour(
             chord_note_count=0,
             voiced_frame_fraction=1.0,
         )
-        return [viterbi_event], [], stats
+        return [viterbi_event], stats
 
-    monkeypatch.setattr(transcribe_mod, "extract_melody", fake_extract_melody)
+    monkeypatch.setattr(
+        transcribe_mod, "backfill_melody_notes", fake_backfill_melody_notes
+    )
 
     from backend.config import settings
     monkeypatch.setattr(settings, "demucs_parallel_stems", True)
@@ -471,8 +473,8 @@ def test_run_with_stems_runs_viterbi_on_vocals_contour(
 
     result, _ = _run_with_stems(audio_path, stems, stem_stats)
 
-    # ``extract_melody`` saw the exact contour array we planted on
-    # the vocals pass (identity, not just equality — we never want
+    # ``backfill_melody_notes`` saw the exact contour array we planted
+    # on the vocals pass (identity, not just equality — we never want
     # to silently materialize a copy of a tens-of-MB tensor).
     assert captured.get("contour") is fake_contour
     # And it received the raw vocals events — one note at pitch 72
@@ -521,16 +523,18 @@ def test_run_with_stems_falls_back_when_viterbi_returns_empty(
 
     monkeypatch.setattr(transcribe_mod, "_basic_pitch_single_pass", fake_pass)
 
-    def fake_extract_melody(contour, note_events, **kwargs):
+    def fake_backfill_melody_notes(contour, note_events, **kwargs):
         stats = melody_mod.MelodyExtractionStats(
             input_note_count=len(note_events),
             melody_note_count=0,
-            chord_note_count=len(note_events),
+            chord_note_count=0,
             voiced_frame_fraction=0.0,
         )
-        return [], list(note_events), stats
+        return [], stats
 
-    monkeypatch.setattr(transcribe_mod, "extract_melody", fake_extract_melody)
+    monkeypatch.setattr(
+        transcribe_mod, "backfill_melody_notes", fake_backfill_melody_notes
+    )
 
     from backend.config import settings
     monkeypatch.setattr(settings, "demucs_parallel_stems", True)
@@ -632,18 +636,25 @@ def test_crepe_owns_melody_skips_basic_pitch_vocals_pass(
     assert "crepe test warn" in warnings_joined
 
 
-def test_run_with_stems_calls_extract_melody_in_additive_only_mode(
+def test_run_with_stems_uses_backfill_melody_notes_wrapper(
     monkeypatch, tmp_path, stub_audio_helpers,
 ):
-    """On the stems path Viterbi runs with ``split_enabled=False``.
+    """On the stems path Viterbi runs via the ``backfill_melody_notes`` wrapper.
 
     The per-stem cleanup already drops BP ghosts on the vocals stem,
     so re-running the path-agreement split at this layer just throws
     away legitimate vocal harmonies / ornaments whose pitches don't
-    match the dominant melodic Viterbi line. ``split_enabled=False``
-    collapses the pass to "add back-filled notes only" — this test
-    pins the wiring so a future refactor can't quietly re-enable the
-    filter and re-introduce the dropped-vocals regression.
+    match the dominant melodic Viterbi line. The
+    ``backfill_melody_notes`` wrapper bakes ``split_enabled=False``
+    into its contract and returns ``(events, stats)`` — this test
+    pins the wiring so a future refactor can't quietly swap back to
+    ``extract_melody`` directly and re-introduce the dropped-vocals
+    regression.
+
+    Also verifies that ``extract_melody`` (the full split pipeline)
+    is *never* called from the stems path — a lingering direct call
+    would be dead code hidden behind the wrapper, which is the bug
+    the review caught in the previous round.
 
     ``max_time_sec`` must also be threaded through — it clamps the
     back-fill against the audio duration so synthesized notes never
@@ -666,7 +677,7 @@ def test_run_with_stems_calls_extract_melody_in_additive_only_mode(
 
     captured: dict[str, Any] = {}
 
-    def fake_extract_melody(contour, note_events, **kwargs):
+    def fake_backfill_melody_notes(contour, note_events, **kwargs):
         captured["kwargs"] = kwargs
         stats = melody_mod.MelodyExtractionStats(
             input_note_count=len(note_events),
@@ -674,9 +685,19 @@ def test_run_with_stems_calls_extract_melody_in_additive_only_mode(
             chord_note_count=0,
             voiced_frame_fraction=1.0,
         )
-        return list(note_events), [], stats
+        return list(note_events), stats
 
-    monkeypatch.setattr(transcribe_mod, "extract_melody", fake_extract_melody)
+    monkeypatch.setattr(
+        transcribe_mod, "backfill_melody_notes", fake_backfill_melody_notes
+    )
+
+    def fail_extract_melody(*_args, **_kwargs):
+        raise AssertionError(
+            "stems path must route through backfill_melody_notes, "
+            "not extract_melody"
+        )
+
+    monkeypatch.setattr(transcribe_mod, "extract_melody", fail_extract_melody)
     # A real duration probe would hit librosa on a 1-byte placeholder
     # wav; the fixture stub returns None, but for this test we want a
     # concrete value to assert that it's threaded through to the call.
@@ -693,7 +714,9 @@ def test_run_with_stems_calls_extract_melody_in_additive_only_mode(
     _run_with_stems(audio_path, stems, stem_stats)
 
     kwargs = captured["kwargs"]
-    assert kwargs.get("split_enabled") is False
+    # The wrapper's signature intentionally omits ``split_enabled`` —
+    # asserting its *absence* is the cheapest regression guard.
+    assert "split_enabled" not in kwargs
     assert kwargs.get("max_time_sec") == pytest.approx(12.5)
 
 
@@ -885,3 +908,68 @@ def test_run_without_stems_falls_back_to_midi_data_when_cleaned_events_empty(
     # And the bytes round-trip through pretty_midi cleanly.
     _roundtrip = pretty_midi.PrettyMIDI(io.BytesIO(midi_bytes))
     assert result is not None
+
+
+def test_run_with_stems_falls_back_to_midi_data_when_rebuild_returns_none(
+    monkeypatch, tmp_path, stub_audio_helpers,
+):
+    """Stems path: ``_rebuild_blob_midi`` → ``None`` falls back to ``midi_data``.
+
+    Pins the fallback wiring at
+    ``transcribe.py:_combined_midi_from_events``: when the rebuild
+    step returns ``None`` (e.g. empty events or a missing pretty_midi
+    import), the caller must substitute the representative per-stem
+    ``midi_data`` pretty_midi so blob serialization still produces
+    real bytes rather than crashing on ``None``.
+
+    Mirrors ``test_run_without_stems_falls_back_to_midi_data_when_cleaned_events_empty``
+    for the Demucs-driven pipeline — the single-mix and stems paths
+    both reach the same ``if pm is not None else fallback`` guard via
+    different callers, and both need regression coverage.
+    """
+    import io
+
+    stems = _make_stems(tmp_path)
+    stem_stats = StemSeparationStats(
+        stems_written=["vocals", "bass", "other", "drums"],
+    )
+
+    # At least one stem must return non-empty events so we don't hit
+    # the outer "all stems empty → fall back to single-mix" guard —
+    # this test is specifically about the *blob rebuild* fallback
+    # inside the stems-path happy route.
+    def fake_pass(stem_path: Path, *, keep_model_output: bool = True):
+        return _make_pass(stem_path.stem)
+
+    monkeypatch.setattr(transcribe_mod, "_basic_pitch_single_pass", fake_pass)
+
+    # Force ``_rebuild_blob_midi`` to return ``None`` so
+    # ``_combined_midi_from_events`` takes the fallback branch at
+    # ``transcribe.py:612``. Without this monkeypatch the rebuild
+    # would succeed on the fake events and the fallback branch
+    # would stay uncovered.
+    monkeypatch.setattr(
+        transcribe_mod, "_rebuild_blob_midi", lambda _events, *, initial_bpm: None
+    )
+
+    from backend.config import settings
+    monkeypatch.setattr(settings, "chord_recognition_enabled", False)
+    monkeypatch.setattr(settings, "melody_extraction_enabled", False)
+
+    audio_path = tmp_path / "mix.wav"
+    audio_path.write_bytes(b"\x00")
+
+    result, midi_bytes = _run_with_stems(audio_path, stems, stem_stats)
+
+    # ``midi_bytes`` is non-None — the fallback branch picked up the
+    # representative per-stem ``midi_data`` pretty_midi rather than
+    # crashing on a ``None`` pretty_midi in ``_serialize_pretty_midi``.
+    assert midi_bytes is not None and len(midi_bytes) > 0
+    _roundtrip = pretty_midi.PrettyMIDI(io.BytesIO(midi_bytes))
+    assert _roundtrip is not None
+    # The result is still populated from the per-stem events — the
+    # blob fallback is independent of the track-level routing.
+    roles = {t.instrument for t in result.midi_tracks}
+    assert InstrumentRole.MELODY in roles
+    assert InstrumentRole.BASS in roles
+    assert InstrumentRole.CHORDS in roles

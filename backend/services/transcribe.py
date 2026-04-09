@@ -63,6 +63,7 @@ from backend.services.crepe_melody import (
 )
 from backend.services.melody_extraction import (
     MelodyExtractionStats,
+    backfill_melody_notes,
     extract_melody,
 )
 from backend.services.stem_separation import (
@@ -947,9 +948,13 @@ def _run_with_stems(
         vocals_duration_sec: float | None = None
         if stems.vocals is not None:
             vocals_duration_sec = _audio_duration_sec(stems.vocals)
-        if settings.melody_extraction_enabled and vocals_contour is not None:
+        if (
+            settings.melody_extraction_enabled
+            and settings.melody_backfill_enabled
+            and vocals_contour is not None
+        ):
             try:
-                extracted, _chords, melody_stats = extract_melody(
+                extracted, melody_stats = backfill_melody_notes(
                     vocals_contour,
                     vocals_bp.cleaned_events,
                     melody_low_midi=settings.melody_low_midi,
@@ -958,13 +963,11 @@ def _run_with_stems(
                     transition_weight=settings.melody_transition_weight,
                     max_transition_bins=settings.melody_max_transition_bins,
                     match_fraction=settings.melody_match_fraction,
-                    backfill_enabled=settings.melody_backfill_enabled,
                     backfill_min_duration_sec=settings.melody_backfill_min_duration_sec,
                     backfill_overlap_fraction=settings.melody_backfill_overlap_fraction,
                     backfill_min_amp=settings.melody_backfill_min_amp,
                     backfill_max_amp=settings.melody_backfill_max_amp,
                     max_time_sec=vocals_duration_sec,
-                    split_enabled=False,
                 )
             except Exception as exc:  # noqa: BLE001 — never let Viterbi sink transcribe
                 log.warning("vocals-stem melody Viterbi raised: %s", exc)
@@ -975,11 +978,6 @@ def _run_with_stems(
                 # ``extracted`` with no skip means the path was
                 # entirely unvoiced — either way, fall back to the
                 # raw BP events rather than silently drop the track.
-                # (``_chords`` is always ``[]`` in ``split_enabled=False``
-                # mode — the split step is bypassed — but we still
-                # unpack the triple to keep the call site honest
-                # about the public ``extract_melody`` return shape.)
-                del _chords
                 if not melody_stats.skipped and extracted:
                     vocals_melody_events = extracted
             # Release the contour reference now that the Viterbi is done

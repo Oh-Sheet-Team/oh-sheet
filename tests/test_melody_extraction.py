@@ -28,6 +28,7 @@ from backend.services.melody_extraction import (  # noqa: E402
     N_CONTOUR_BINS,
     _path_to_midi_runs,
     _trace_f0_contour,
+    backfill_melody_notes,
     bin_to_midi,
     extract_melody,
     midi_to_bin,
@@ -493,6 +494,40 @@ def test_split_enabled_false_still_runs_backfill_against_all_events():
     assert pitches == [67, 72]
     assert chords == []
     assert stats.backfilled_note_count == 1
+
+
+def test_backfill_melody_notes_wrapper_matches_extract_melody_additive_mode():
+    """The ``backfill_melody_notes`` wrapper is a load-bearing call site.
+
+    The stems path in ``backend.services.transcribe._run_with_stems``
+    routes through this wrapper instead of ``extract_melody`` so the
+    call site doesn't have to unpack the always-empty chord list. This
+    test pins the contract: the wrapper must produce the same melody
+    event list as ``extract_melody(..., split_enabled=False)`` with
+    back-fill enabled, and it must return a 2-tuple (events, stats)
+    rather than the 3-tuple the full pipeline returns.
+    """
+    frames = int(round(0.35 * FRAME_RATE_HZ))
+    c = _blank_contour(frames)
+    _paint(c, 0, int(round(0.30 * FRAME_RATE_HZ)), 67, salience=0.9)
+    events = [_ne(0.0, 0.30, 72)]
+
+    wrapper_events, wrapper_stats = backfill_melody_notes(c, events)
+    direct_melody, direct_chords, direct_stats = extract_melody(
+        c, events, backfill_enabled=True, split_enabled=False,
+    )
+
+    # Wrapper drops the always-empty chord list from the tuple.
+    assert direct_chords == []
+    # Same melody events: the wrapper is a pure delegation.
+    assert wrapper_events == direct_melody
+    # Stats line up — both paths ran the same Viterbi + back-fill.
+    assert wrapper_stats.backfilled_note_count == direct_stats.backfilled_note_count
+    assert wrapper_stats.melody_note_count == direct_stats.melody_note_count
+    # And the wrapper actually back-filled the MIDI 67 stable run that
+    # no input event covered — the whole point of the additive path.
+    assert wrapper_stats.backfilled_note_count == 1
+    assert sorted(e[2] for e in wrapper_events) == [67, 72]
 
 
 def test_split_enabled_false_backfill_still_skips_duplicates():

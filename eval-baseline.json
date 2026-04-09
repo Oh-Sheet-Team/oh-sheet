@@ -371,14 +371,20 @@
   "per_role": {
     "melody": {
       "mean_f1_no_offset": 0.09047832483600411,
+      "mean_f1_no_offset_when_active": 0.09047832483600411,
+      "n_files_scored": 24,
       "n_files_with_role": 24
     },
     "bass": {
       "mean_f1_no_offset": 0.18333869478212095,
+      "mean_f1_no_offset_when_active": 0.18333869478212095,
+      "n_files_scored": 24,
       "n_files_with_role": 24
     },
     "chords": {
       "mean_f1_no_offset": 0.3457838980412575,
+      "mean_f1_no_offset_when_active": 0.3457838980412575,
+      "n_files_scored": 24,
       "n_files_with_role": 24
     }
   }

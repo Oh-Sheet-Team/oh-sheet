@@ -66,6 +66,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import random
 import shutil
 import statistics
@@ -282,8 +283,17 @@ def _synthesize(
     On failure, stderr from fluidsynth is surfaced in the raised
     exception — it's usually self-explanatory (missing soundfont, bad
     MIDI, etc.).
+
+    The rendered WAV is staged to ``<out_wav>.partial`` and only
+    promoted to ``out_wav`` via :func:`os.replace` after both
+    fluidsynth and the post-hoc clip succeed. If the process is
+    killed mid-render (SIGKILL, OOM, ^C) the partial file stays on
+    disk but ``out_wav`` does not, so the next run re-synthesizes
+    rather than silently reusing a truncated cache entry.
     """
     out_wav.parent.mkdir(parents=True, exist_ok=True)
+    staging_wav = out_wav.with_suffix(out_wav.suffix + ".partial")
+    staging_wav.unlink(missing_ok=True)
     with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as tmp:
         tmp_path = Path(tmp.name)
     try:
@@ -294,7 +304,7 @@ def _synthesize(
                 "-ni",
                 "-g", "1.0",
                 "-r", str(sample_rate),
-                "-F", str(out_wav),
+                "-F", str(staging_wav),
                 str(soundfont),
                 str(tmp_path),
             ],
@@ -306,19 +316,26 @@ def _synthesize(
                 f"fluidsynth failed (rc={proc.returncode}): "
                 f"{proc.stderr.strip() or proc.stdout.strip()}"
             )
+
+        # Hard-clip the rendered WAV to max_duration if needed.
+        # soundfile round-trip is cheap (~10 ms for a 30 s clip) and
+        # guarantees the cached audio matches the ground-truth window
+        # exactly. Stays on the staging path so a failure here
+        # doesn't leave a bad file at ``out_wav``.
+        if max_duration is not None and max_duration > 0:
+            import soundfile as sf  # noqa: PLC0415
+
+            data, sr = sf.read(str(staging_wav))
+            max_samples = int(max_duration * sr)
+            if len(data) > max_samples:
+                sf.write(str(staging_wav), data[:max_samples], sr)
+
+        os.replace(staging_wav, out_wav)
+    except BaseException:
+        staging_wav.unlink(missing_ok=True)
+        raise
     finally:
         tmp_path.unlink(missing_ok=True)
-
-    # Hard-clip the rendered WAV to max_duration if needed. soundfile
-    # round-trip is cheap (~10 ms for a 30 s clip) and guarantees the
-    # cached audio matches the ground-truth window exactly.
-    if max_duration is not None and max_duration > 0:
-        import soundfile as sf  # noqa: PLC0415
-
-        data, sr = sf.read(str(out_wav))
-        max_samples = int(max_duration * sr)
-        if len(data) > max_samples:
-            sf.write(str(out_wav), data[:max_samples], sr)
 
 
 def _ensure_synthesized(
@@ -595,21 +612,37 @@ def _role_breakdown(
     can only ever hit notes that belong to the true melody, but the
     reference also contains non-melody notes), but deltas between
     runs remain meaningful for A/B tuning.
+
+    Files where the extractor produced zero notes for a given role
+    contribute F1 = 0.0 to ``mean_f1_no_offset`` (it's the only
+    honest answer: the reference is non-empty, so recall — and thus
+    F1 — is zero). Excluding them biased the mean upward whenever a
+    tuning change activated the extractor on more files, which
+    inverted the A/B signal the harness is meant to produce. The
+    subset mean is still reported as ``mean_f1_no_offset_when_active``
+    alongside ``n_files_with_role`` for diagnosis.
     """
     roles = ("melody", "bass", "chords", "piano")
     out: dict[str, dict[str, float]] = {}
     for role in roles:
-        f1s: list[float] = []
+        all_f1s: list[float] = []
+        active_f1s: list[float] = []
         for _row, ref_i, ref_p, result in rows_with_results:
             est_i, est_p = _predicted_notes(result, role_filter=role)
             if len(est_i) == 0:
+                all_f1s.append(0.0)
                 continue
             scores = _score(ref_i, ref_p, est_i, est_p)
-            f1s.append(scores["f1_no_offset"])
-        if f1s:
+            all_f1s.append(scores["f1_no_offset"])
+            active_f1s.append(scores["f1_no_offset"])
+        if all_f1s:
             out[role] = {
-                "mean_f1_no_offset": statistics.fmean(f1s),
-                "n_files_with_role": len(f1s),
+                "mean_f1_no_offset": statistics.fmean(all_f1s),
+                "mean_f1_no_offset_when_active": (
+                    statistics.fmean(active_f1s) if active_f1s else 0.0
+                ),
+                "n_files_scored": len(all_f1s),
+                "n_files_with_role": len(active_f1s),
             }
     return out
 
@@ -620,10 +653,14 @@ def _print_role_breakdown(role_scores: dict[str, dict[str, float]]) -> None:
     print("\n=== Per-role F1 (predicted role vs full ground truth) ===")
     print("  Note: reference is unsplit, so these are lower bounds.")
     print("  Deltas between runs are what matter for A/B tuning.")
+    print("  mean F1 counts files with zero predictions as 0.0;")
+    print("  'active' restricts to files where the role fired.")
     for role, scores in role_scores.items():
         print(
             f"  {role:<8}  mean F1 {scores['mean_f1_no_offset']:.3f}  "
-            f"({int(scores['n_files_with_role'])} files)"
+            f"(active {scores['mean_f1_no_offset_when_active']:.3f}, "
+            f"{int(scores['n_files_with_role'])}/"
+            f"{int(scores['n_files_scored'])} files)"
         )
 
 
