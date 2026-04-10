@@ -82,4 +82,4 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install python-semantic-release
-      - run: semantic-release version --dry-run --no-vcs-release
+      - run: semantic-release version --print --no-vcs-release
