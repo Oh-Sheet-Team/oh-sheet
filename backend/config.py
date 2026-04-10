@@ -142,6 +142,15 @@ class Settings(BaseSettings):
     cleanup_energy_gate_floor_ratio: float = 0.1
     cleanup_energy_gate_tail_sec: float = 0.05
 
+    # ---- Onset refinement (post-cleanup spectral onset snapping) -----------
+    # After cleanup passes complete, snap note onsets to nearby peaks in a
+    # higher-resolution spectral onset-strength function. This corrects the
+    # ~23 ms quantization inherent in Basic Pitch's hop_length=512 grid.
+    # See backend/services/onset_refine.py for semantics.
+    onset_refine_enabled: bool = True
+    onset_refine_max_shift_sec: float = 0.05     # maximum onset adjustment
+    onset_refine_hop_length: int = 256           # hop length for onset detection (finer than BP's 512)
+
     # ---- Melody extraction (Phase 2 post-processing) -----------------------
     # Viterbi-based melody / chord split driven by Basic Pitch's
     # ``model_output["contour"]`` salience matrix. See
@@ -363,6 +372,17 @@ class Settings(BaseSettings):
     key_chord_validation_enabled: bool = True
     key_chord_diatonic_threshold: float = 0.6
     key_chord_flip_margin: float = 0.15
+
+    # ---- Beat-synchronous note snapping (post-quantization) ---------------
+    # After quantization, notes can drift from true beat positions due to
+    # cumulative tempo-map error. This correction layer checks whether
+    # shifting each note onset by ±1 grid step better aligns it with
+    # detected beats (integer beats + subdivision). Only shifts that
+    # improve alignment by more than ``snap_weight`` are applied, and
+    # voice collisions are respected. Pure beat-space pass — no I/O.
+    arrange_beat_snap_enabled: bool = True
+    arrange_beat_snap_weight: float = 0.3
+    arrange_beat_snap_subdivision: float = 0.5
 
 
 settings = Settings()

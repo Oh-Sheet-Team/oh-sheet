@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from backend.config import settings
 from backend.contracts import (
     SCHEMA_VERSION,
     Difficulty,
@@ -169,6 +170,135 @@ def _resolve_overlaps(
 
 
 # ---------------------------------------------------------------------------
+# Beat-synchronous note snapping (post-quantization correction)
+# ---------------------------------------------------------------------------
+
+def _get_beat_positions(max_beat: float, subdivision: float = 0.5) -> list[float]:
+    """Generate beat positions at the given subdivision granularity.
+
+    For subdivision=0.5: beats at 0, 0.5, 1.0, 1.5, 2.0, ...
+    For subdivision=1.0: beats at 0, 1, 2, 3, ...
+    """
+    positions: list[float] = []
+    b = 0.0
+    while b <= max_beat:
+        positions.append(b)
+        b += subdivision
+    return positions
+
+
+def _beat_alignment(onset: float, beat_positions: list[float]) -> float:
+    """How close is this onset to the nearest beat position?
+
+    Returns a score in (0, 1] — higher means better alignment.
+    """
+    if not beat_positions:
+        return 0.0
+    min_dist = min(abs(onset - b) for b in beat_positions)
+    return 1.0 / (1.0 + min_dist)
+
+
+def _beat_snap(
+    notes: list[tuple[int, float, float, int, int]],
+    tempo_map: list[TempoMapEntry],
+    grid: float,
+    snap_weight: float = 0.3,
+    subdivision: float = 0.5,
+) -> list[tuple[int, float, float, int, int]]:
+    """Shift note onsets by ±1 grid step when it better aligns with beats.
+
+    Pure beat-space pass — no I/O, no audio loading. Runs after quantization
+    and voice assignment, respecting voice collision constraints.
+
+    Parameters
+    ----------
+    notes:
+        (pitch, onset_beat, duration_beat, velocity, voice) tuples,
+        sorted by (onset_beat, -pitch) from ``_resolve_overlaps``.
+    tempo_map:
+        The piece's tempo map (used only for max-beat calculation).
+    grid:
+        Quantization grid in beats (e.g. 0.25 for 1/16th note).
+    snap_weight:
+        Minimum improvement in alignment score required to trigger a shift.
+    subdivision:
+        Beat subdivision granularity for generating beat positions.
+
+    Returns
+    -------
+    New list of note tuples with adjusted onsets/durations.
+    """
+    if not notes:
+        return notes
+
+    max_beat = max(n[1] + n[2] for n in notes)
+    beat_positions = _get_beat_positions(max_beat + grid, subdivision)
+
+    # Work on a mutable copy; group by voice for collision checks
+    result: list[tuple[int, float, float, int, int]] = list(notes)
+
+    # Pre-compute per-voice ordered indices
+    by_voice: dict[int, list[int]] = {}
+    for idx, (_, onset, dur, _, voice) in enumerate(result):
+        by_voice.setdefault(voice, []).append(idx)
+
+    shifted_count = 0
+
+    for voice, indices in by_voice.items():
+        # indices are in insertion order from _resolve_overlaps (onset-sorted)
+        for pos, idx in enumerate(indices):
+            pitch, onset, dur, vel, v = result[idx]
+            current_score = _beat_alignment(onset, beat_positions)
+
+            best_onset = onset
+            best_score = current_score
+
+            for candidate_onset in (onset - grid, onset + grid):
+                if candidate_onset < 0:
+                    continue
+                cand_score = _beat_alignment(candidate_onset, beat_positions)
+                if cand_score > best_score:
+                    best_onset = candidate_onset
+                    best_score = cand_score
+
+            # Only shift if improvement exceeds threshold
+            if best_onset == onset or (best_score - current_score) <= snap_weight:
+                continue
+
+            # Check voice collision: would the new onset overlap the previous
+            # note's end in the same voice?
+            if pos > 0:
+                prev_idx = indices[pos - 1]
+                _, prev_onset, prev_dur, _, _ = result[prev_idx]
+                if best_onset < prev_onset + prev_dur:
+                    continue  # would collide with previous note
+
+            # Check voice collision: would the new onset + duration overlap
+            # the next note's onset in the same voice?
+            # (We adjust duration below, but the note's end stays fixed,
+            # so only onset-before-previous-end matters. However, if we
+            # shift forward, the note's onset could equal or exceed the
+            # next note's onset — block that.)
+            if pos + 1 < len(indices):
+                next_idx = indices[pos + 1]
+                _, next_onset, _, _, _ = result[next_idx]
+                if best_onset >= next_onset:
+                    continue  # would collide with next note
+
+            # Adjust duration to maintain the note's end position
+            new_dur = dur + (onset - best_onset)
+            new_dur = max(new_dur, grid)  # clamp to minimum grid step
+
+            result[idx] = (pitch, best_onset, new_dur, vel, v)
+            shifted_count += 1
+
+    if shifted_count:
+        log.info("beat_snap: shifted %d notes", shifted_count)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Velocity normalization
 # ---------------------------------------------------------------------------
 
@@ -251,6 +381,24 @@ def _arrange_sync(
     max_lh = MAX_VOICES_LH if difficulty != "beginner" else 1
     rh_voiced = _resolve_overlaps(rh_raw, max_rh)
     lh_voiced = _resolve_overlaps(lh_raw, max_lh)
+
+    # Post-quantization beat-synchronous snapping
+    if settings.arrange_beat_snap_enabled:
+        rh_voiced = _beat_snap(
+            rh_voiced,
+            tempo_map,
+            grid=QUANT_GRID,
+            snap_weight=settings.arrange_beat_snap_weight,
+            subdivision=settings.arrange_beat_snap_subdivision,
+        )
+        lh_voiced = _beat_snap(
+            lh_voiced,
+            tempo_map,
+            grid=QUANT_GRID,
+            snap_weight=settings.arrange_beat_snap_weight,
+            subdivision=settings.arrange_beat_snap_subdivision,
+        )
+
     rh_voiced, lh_voiced = _normalize_velocity(rh_voiced, lh_voiced)
 
     right_hand = [
