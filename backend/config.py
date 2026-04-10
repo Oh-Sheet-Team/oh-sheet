@@ -118,15 +118,28 @@ class Settings(BaseSettings):
     cleanup_ghost_amp_median_scale: float = 0.5
 
     # Per-stem cleanup overrides — applied when running Basic Pitch
-    # on Demucs-separated stems. ``None`` means "use the base value
-    # above". Tested 0.0 (disabled) — regressed because instrument
-    # overtones still produce octave ghosts even on isolated stems.
-    # Stems have cleaner separation than full mixes, so octave ghosts
-    # at 0.5x amplitude ratio are more likely artifacts than real
-    # doublings, and ghost notes can be filtered more aggressively
-    # (0.04s vs global 0.05s) because stems have less reverb bleed.
+    # on Demucs-separated stems. Stems have cleaner separation than
+    # full mixes, so octave ghosts at 0.5x amplitude ratio are more
+    # likely artifacts, and ghost notes can be filtered more aggressively.
     cleanup_stem_octave_amp_ratio: float = 0.5
     cleanup_stem_ghost_max_duration_sec: float = 0.04
+
+    # Per-role cleanup — bass sustains longer than melody, chords have
+    # more legitimate octave doublings than vocals. These override the
+    # global cleanup_* defaults when cleanup_for_role() is used.
+    cleanup_melody_merge_gap_sec: float = 0.02   # tighter than global 0.03
+    cleanup_melody_ghost_max_duration_sec: float = 0.04  # tighter than global 0.05
+    cleanup_bass_merge_gap_sec: float = 0.05     # looser — bass notes sustain longer
+    cleanup_bass_ghost_max_duration_sec: float = 0.08    # bass has legitimate short notes less often
+    cleanup_chords_merge_gap_sec: float = 0.04   # moderate
+    cleanup_chords_octave_amp_ratio: float = 0.5  # stricter — real chord octave doublings are common
+
+    # Energy gating (Pass 5) — trims suspiciously long note offsets
+    # based on amplitude envelope decay or a duration/amplitude heuristic.
+    cleanup_energy_gate_enabled: bool = True
+    cleanup_energy_gate_max_sustain_sec: float = 2.0
+    cleanup_energy_gate_floor_ratio: float = 0.1
+    cleanup_energy_gate_tail_sec: float = 0.05
 
     # ---- Melody extraction (Phase 2 post-processing) -----------------------
     # Viterbi-based melody / chord split driven by Basic Pitch's
