@@ -116,6 +116,25 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = ["backend"]
 
+[tool.semantic_release]
+version_toml = [
+    "pyproject.toml:project.version",
+    "shared/pyproject.toml:project.version",
+    "svc-decomposer/pyproject.toml:project.version",
+    "svc-assembler/pyproject.toml:project.version",
+]
+version_variables = [
+    "backend/__init__.py:__version__",
+]
+commit_message = "chore(release): v{version}"
+tag_format = "v{version}"
+
+[tool.semantic_release.branches.main]
+match = "main"
+
+[tool.semantic_release.publish]
+upload_to_vcs_release = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
