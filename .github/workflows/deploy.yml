@@ -39,9 +39,15 @@ jobs:
       - name: Authorize Docker push
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^version' pyproject.toml | sed 's/version *= *"\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Build and push container images
         run: |
-          docker build -t ${{ env.IMAGE }}:${{ github.sha }} -t ${{ env.IMAGE }}:latest .
+          docker build --build-arg APP_VERSION=${{ steps.version.outputs.version }} -t ${{ env.IMAGE }}:${{ github.sha }} -t ${{ env.IMAGE }}:latest .
           docker push ${{ env.IMAGE }}:${{ github.sha }}
           docker push ${{ env.IMAGE }}:latest
 
@@ -97,7 +103,7 @@ jobs:
           curl -sf -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
             -H 'Content-type: application/json' \
             -d "{
-              \"text\": \":white_check_mark: *oh-sheet deployed* \`${COMMIT_SHORT}\` to <https://oh-sheet.duckdns.org> — <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>\"
+              \"text\": \":white_check_mark: *oh-sheet deployed* v${{ steps.version.outputs.version }} (\`${COMMIT_SHORT}\`) to <https://oh-sheet.duckdns.org> — <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>\"
             }"
 
       - name: Notify Slack on failure
