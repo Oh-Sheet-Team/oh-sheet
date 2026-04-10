@@ -60,6 +60,13 @@ from backend.services.chord_recognition import (
 from backend.services.crepe_melody import (
     CrepeMelodyStats,
     extract_vocal_melody_crepe,
+    fuse_crepe_and_bp_melody,
+)
+from backend.services.key_estimation import (
+    KeyEstimationStats,
+    MeterEstimationStats,
+    analyze_audio,
+    refine_key_with_chords,
 )
 from backend.services.melody_extraction import (
     MelodyExtractionStats,
@@ -128,6 +135,10 @@ def _pretty_midi_to_transcription_result(
     default_bpm: float = 120.0,
     *,
     tempo_map_override: list[TempoMapEntry] | None = None,
+    key_label: str = "C:major",
+    time_signature: tuple[int, int] = (4, 4),
+    key_stats: KeyEstimationStats | None = None,
+    meter_stats: MeterEstimationStats | None = None,
     preprocess_stats: PreprocessStats | None = None,
     cleanup_stats: CleanupStats | None = None,
     melody_stats: MelodyExtractionStats | None = None,
@@ -226,8 +237,8 @@ def _pretty_midi_to_transcription_result(
         tempo_map = [TempoMapEntry(time_sec=0.0, beat=0.0, bpm=bpm)]
 
     analysis = HarmonicAnalysis(
-        key="C:major",
-        time_signature=(4, 4),
+        key=key_label,
+        time_signature=time_signature,
         tempo_map=tempo_map,
         chords=list(chord_labels) if chord_labels else [],
         sections=[],
@@ -239,6 +250,10 @@ def _pretty_midi_to_transcription_result(
     ]
     if tempo_map_override:
         warnings.append("tempo_map from audio beat tracking (librosa)")
+    if key_stats is not None:
+        warnings.extend(key_stats.as_warnings())
+    if meter_stats is not None:
+        warnings.extend(meter_stats.as_warnings())
     if stem_stats is not None:
         warnings.extend(stem_stats.as_warnings())
     # Single-pass stats (no Demucs). When the Demucs path is active
@@ -366,6 +381,62 @@ def _audio_duration_sec(path: Path) -> float | None:
         return None
 
 
+def _maybe_analyze_key_and_meter(
+    audio_path: Path,
+) -> tuple[str, tuple[int, int], KeyEstimationStats | None, MeterEstimationStats | None]:
+    """Run key + meter estimation, honouring the config feature flags.
+
+    Either estimator can be disabled independently via
+    ``OHSHEET_KEY_DETECTION_ENABLED`` /
+    ``OHSHEET_METER_DETECTION_ENABLED``, and any runtime failure
+    inside :func:`~backend.services.key_estimation.analyze_audio`
+    already falls back to the hardcoded ``"C:major"`` / ``(4, 4)``
+    defaults, so callers can use the returned values unconditionally.
+
+    When a flag is off, the corresponding stats object is ``None``
+    — the assembler in :func:`_pretty_midi_to_transcription_result`
+    skips the ``as_warnings()`` extend for None stats so disabled
+    estimators leave no trace in ``QualitySignal.warnings``.
+
+    A top-level try/except catches any unexpected crash from the
+    key_estimation module so a bug there can never sink the
+    transcribe stage — mirrors the defensive pattern used around
+    :func:`~backend.services.chord_recognition.recognize_chords`.
+    """
+    if (
+        not settings.key_detection_enabled
+        and not settings.meter_detection_enabled
+    ):
+        return "C:major", (4, 4), None, None
+
+    try:
+        key_label, time_signature, raw_key_stats, raw_meter_stats = analyze_audio(
+            audio_path,
+            key_min_confidence=settings.key_min_confidence,
+            meter_confidence_margin=settings.meter_confidence_margin,
+            meter_min_beats=settings.meter_min_beats,
+        )
+    except Exception as exc:  # noqa: BLE001 — never let analysis sink transcribe
+        log.warning("key/meter analysis raised on %s: %s", audio_path, exc)
+        return "C:major", (4, 4), None, None
+
+    # Honour the individual feature flags by discarding one side of
+    # the analysis when it's disabled. analyze_audio always runs both
+    # estimators (single librosa.load) so the wall-clock cost is paid
+    # once regardless — flipping an individual flag off is an escape
+    # hatch, not an optimization.
+    key_stats: KeyEstimationStats | None = raw_key_stats
+    meter_stats: MeterEstimationStats | None = raw_meter_stats
+    if not settings.key_detection_enabled:
+        key_label = "C:major"
+        key_stats = None
+    if not settings.meter_detection_enabled:
+        time_signature = (4, 4)
+        meter_stats = None
+
+    return key_label, time_signature, key_stats, meter_stats
+
+
 def _serialize_pretty_midi(pm: Any) -> bytes | None:
     """Serialize a pretty_midi.PrettyMIDI to raw .mid bytes.
 
@@ -402,6 +473,10 @@ def _basic_pitch_single_pass(
     audio_path: Path,
     *,
     keep_model_output: bool = True,
+    onset_threshold: float | None = None,
+    frame_threshold: float | None = None,
+    cleanup_octave_amp_ratio: float | None = None,
+    cleanup_ghost_max_duration_sec: float | None = None,
 ) -> _BasicPitchPass:
     """Run preprocess → Basic Pitch → cleanup for one audio file.
 
@@ -457,8 +532,8 @@ def _basic_pitch_single_pass(
         model_output, midi_data, note_events = predict(
             str(inference_path),
             model_or_model_path=model,
-            onset_threshold=settings.basic_pitch_onset_threshold,
-            frame_threshold=settings.basic_pitch_frame_threshold,
+            onset_threshold=onset_threshold if onset_threshold is not None else settings.basic_pitch_onset_threshold,
+            frame_threshold=frame_threshold if frame_threshold is not None else settings.basic_pitch_frame_threshold,
             minimum_note_length=settings.basic_pitch_minimum_note_length_ms,
         )
     finally:
@@ -477,9 +552,17 @@ def _basic_pitch_single_pass(
     cleaned_events, cleanup_stats = cleanup_note_events(
         note_events,
         merge_gap_sec=settings.cleanup_merge_gap_sec,
-        octave_amp_ratio=settings.cleanup_octave_amp_ratio,
+        octave_amp_ratio=(
+            cleanup_octave_amp_ratio
+            if cleanup_octave_amp_ratio is not None
+            else settings.cleanup_octave_amp_ratio
+        ),
         octave_onset_tol_sec=settings.cleanup_octave_onset_tol_sec,
-        ghost_max_duration_sec=settings.cleanup_ghost_max_duration_sec,
+        ghost_max_duration_sec=(
+            cleanup_ghost_max_duration_sec
+            if cleanup_ghost_max_duration_sec is not None
+            else settings.cleanup_ghost_max_duration_sec
+        ),
         ghost_amp_median_scale=settings.cleanup_ghost_amp_median_scale,
     )
     if cleanup_stats.output_count != cleanup_stats.input_count:
@@ -709,6 +792,15 @@ def _run_without_stems(
     # beat grid, the sequencing is already correct.
     audio_tempo_map = tempo_map_from_audio_path(audio_path)
 
+    # Key + meter estimation on the source waveform. Fills the two
+    # ``HarmonicAnalysis`` fields Basic Pitch does not predict. Both
+    # estimators are best-effort and fall back to ``C:major`` / ``(4,4)``
+    # on any failure, so the result is never worse than the old
+    # hardcoded defaults — see :func:`~backend.services.key_estimation.analyze_audio`.
+    key_label, time_signature, key_stats, meter_stats = _maybe_analyze_key_and_meter(
+        audio_path,
+    )
+
     # Chord recognition is audio-only and independent of the event
     # pipeline — it labels the waveform, and the labels attach to
     # HarmonicAnalysis.chords. Best-effort: any failure yields an empty
@@ -725,6 +817,25 @@ def _run_without_stems(
             chord_labels = []
             chord_stats = ChordRecognitionStats(skipped=True)
             chord_stats.warnings.append(f"chord recognition failed: {exc}")
+
+    # Cross-validate the KS key estimate against detected chords.
+    # This helps resolve relative major/minor confusions (Am vs C)
+    # by checking whether the chord progression better supports the
+    # runner-up key. Best-effort: any failure returns the KS key
+    # unchanged.
+    if (
+        settings.key_chord_validation_enabled
+        and key_stats is not None
+        and not key_stats.skipped
+        and chord_labels
+    ):
+        key_label, key_stats = refine_key_with_chords(
+            key_label, key_stats.confidence,
+            key_stats.runner_up_label, key_stats.runner_up_confidence,
+            chord_labels,
+            diatonic_threshold=settings.key_chord_diatonic_threshold,
+            flip_margin=settings.key_chord_flip_margin,
+        )
 
     # Rebuild the blob MIDI so its ``set_tempo`` meta event matches the
     # waveform-derived tempo. basic-pitch's own ``note_events_to_midi``
@@ -754,6 +865,10 @@ def _run_without_stems(
         events_by_role,
         model_output,
         tempo_map_override=audio_tempo_map,
+        key_label=key_label,
+        time_signature=time_signature,
+        key_stats=key_stats,
+        meter_stats=meter_stats,
         preprocess_stats=pass_result.preprocess_stats,
         cleanup_stats=pass_result.cleanup_stats,
         melody_stats=melody_stats,
@@ -840,6 +955,13 @@ def _run_with_stems(
                 stems.vocals,
                 model=settings.crepe_model,
                 device=settings.crepe_device,
+                voicing_threshold=settings.crepe_voicing_threshold,
+                median_filter_frames=settings.crepe_median_filter_frames,
+                min_note_duration_sec=settings.crepe_min_note_duration_sec,
+                merge_gap_sec=settings.crepe_merge_gap_sec,
+                amp_min=settings.crepe_amp_min,
+                amp_max=settings.crepe_amp_max,
+                max_pitch_leap=settings.crepe_max_pitch_leap,
             )
         except Exception as exc:  # noqa: BLE001 — CREPE must not sink transcribe
             log.warning("crepe vocal melody raised: %s", exc)
@@ -847,17 +969,26 @@ def _run_with_stems(
             crepe_stats = CrepeMelodyStats(skipped=True)
             crepe_stats.warnings.append(f"crepe-melody: exception: {exc}")
     crepe_owns_melody = bool(crepe_events)
+    # In hybrid mode, we always run BP on vocals even when CREPE
+    # succeeded, because the fusion step needs both event lists.
+    # In non-hybrid mode, CREPE success still skips the BP vocals pass
+    # (the pre-hybrid behavior).
+    hybrid_mode = (
+        crepe_owns_melody
+        and settings.crepe_hybrid_enabled
+    )
 
     # Build the list of stems we actually need to run Basic Pitch on,
     # honoring the per-consumer escape hatches. An absent stem (e.g.
     # a 2-source bag that didn't emit vocals) naturally drops out
     # here too. Vocals are skipped when CREPE already supplied the
-    # melody track.
+    # melody track — unless hybrid mode is on, in which case we need
+    # BP vocals events for the fusion step.
     stem_jobs: list[tuple[str, Path]] = []
     if (
         settings.demucs_use_vocals_for_melody
         and stems.vocals is not None
-        and not crepe_owns_melody
+        and (not crepe_owns_melody or hybrid_mode)
     ):
         stem_jobs.append(("vocals", stems.vocals))
     if settings.demucs_use_bass_stem and stems.bass is not None:
@@ -865,21 +996,49 @@ def _run_with_stems(
     if settings.demucs_use_other_for_chords and stems.other is not None:
         stem_jobs.append(("other", stems.other))
 
+    # Per-stem threshold lookup — each stem gets its own tuned
+    # thresholds. Precedence: stem-specific setting > generic
+    # per-stem fallback > None (which lets _basic_pitch_single_pass
+    # fall through to the global default).
+    def _get_stem_bp_thresholds(label: str) -> tuple[float | None, float | None]:
+        """Return (onset_threshold, frame_threshold) for a given stem label."""
+        onset: float | None = None
+        frame: float | None = None
+        if label == "vocals":
+            onset = settings.basic_pitch_stem_onset_threshold_vocals
+            frame = settings.basic_pitch_stem_frame_threshold_vocals
+        elif label == "bass":
+            onset = settings.basic_pitch_stem_onset_threshold_bass
+            frame = settings.basic_pitch_stem_frame_threshold_bass
+        elif label == "other":
+            onset = settings.basic_pitch_stem_onset_threshold_other
+            frame = settings.basic_pitch_stem_frame_threshold_other
+        # Fall back to generic per-stem overrides if stem-specific is None.
+        if onset is None:
+            onset = settings.basic_pitch_stem_onset_threshold
+        if frame is None:
+            frame = settings.basic_pitch_stem_frame_threshold
+        return onset, frame
+
+    def _get_stem_cleanup_thresholds(label: str) -> tuple[float | None, float | None]:
+        """Return (octave_amp_ratio, ghost_max_duration_sec) for a given stem."""
+        return (
+            settings.cleanup_stem_octave_amp_ratio,
+            settings.cleanup_stem_ghost_max_duration_sec,
+        )
+
     def _run_stem(job: tuple[str, Path]) -> tuple[str, _BasicPitchPass | None]:
         label, stem_path = job
+        onset_thr, frame_thr = _get_stem_bp_thresholds(label)
+        oct_ratio, ghost_dur = _get_stem_cleanup_thresholds(label)
         try:
-            # Keep ``model_output`` on the vocals stem so the Phase-2
-            # Viterbi melody extractor can re-score the BP vocals
-            # events against the vocals contour below. Bass / other
-            # drop it immediately: on the parallel path this matters
-            # twice, since the three passes overlap in time (peak
-            # memory would otherwise carry three live contour
-            # matrices), and neither of those two stems feeds a
-            # downstream ``model_output`` consumer — the bass
-            # Viterbi fallback stays disabled here because the bass
-            # stem already fixes what it was compensating for.
             bp = _basic_pitch_single_pass(
-                stem_path, keep_model_output=(label == "vocals"),
+                stem_path,
+                keep_model_output=(label == "vocals"),
+                onset_threshold=onset_thr,
+                frame_threshold=frame_thr,
+                cleanup_octave_amp_ratio=oct_ratio,
+                cleanup_ghost_max_duration_sec=ghost_dur,
             )
         except Exception as exc:  # noqa: BLE001 — one bad stem must not sink the job
             log.warning("Basic Pitch failed on %s stem (%s): %s", label, stem_path, exc)
@@ -940,7 +1099,22 @@ def _run_with_stems(
     # BP events so the stems path never *loses* a melody track to
     # this pass.
     melody_stats: MelodyExtractionStats | None = None
-    if crepe_owns_melody:
+    if crepe_owns_melody and hybrid_mode and vocals_bp is not None and vocals_bp.cleaned_events:
+        # Hybrid CREPE+BP fusion: combine CREPE's pitch accuracy with
+        # BP's onset/offset timing. Both ran on the vocals stem.
+        try:
+            fused_events = fuse_crepe_and_bp_melody(
+                crepe_events,
+                vocals_bp.cleaned_events,
+                bp_min_amp=settings.crepe_hybrid_bp_min_amp,
+                overlap_threshold=settings.crepe_hybrid_overlap_threshold,
+            )
+        except Exception as exc:  # noqa: BLE001 — fusion must not sink transcribe
+            log.warning("crepe+bp fusion raised: %s; falling back to CREPE-only", exc)
+            fused_events = crepe_events
+        events_by_role[InstrumentRole.MELODY] = fused_events if fused_events else crepe_events
+    elif crepe_owns_melody:
+        # Non-hybrid or BP vocals had no events — use CREPE directly.
         events_by_role[InstrumentRole.MELODY] = crepe_events
     elif vocals_bp is not None and vocals_bp.cleaned_events:
         vocals_melody_events = vocals_bp.cleaned_events
@@ -1019,6 +1193,16 @@ def _run_with_stems(
         log.debug("drums-stem beat tracking returned None, retrying with mix")
         audio_tempo_map = tempo_map_from_audio_path(audio_path)
 
+    # Key + meter estimation — always run against the original mix
+    # rather than any single stem. Vocals alone lose the harmonic
+    # support the KS profile keys on; "other" alone loses the melody
+    # leading tones; drums alone obviously has no pitch content.
+    # The mix sees all of it and is what downstream engrave will
+    # render the key signature for anyway.
+    key_label, time_signature, key_stats, meter_stats = _maybe_analyze_key_and_meter(
+        audio_path,
+    )
+
     # Chord recognition — prefer the "other" stem when enabled and
     # available. Chord labeling on the other stem is cleaner because
     # vocal sibilance and drum spectral leakage don't pollute the
@@ -1049,6 +1233,21 @@ def _run_with_stems(
             chord_labels = []
             chord_stats = ChordRecognitionStats(skipped=True)
             chord_stats.warnings.append(f"chord recognition failed: {exc}")
+
+    # Cross-validate the KS key estimate against detected chords.
+    if (
+        settings.key_chord_validation_enabled
+        and key_stats is not None
+        and not key_stats.skipped
+        and chord_labels
+    ):
+        key_label, key_stats = refine_key_with_chords(
+            key_label, key_stats.confidence,
+            key_stats.runner_up_label, key_stats.runner_up_confidence,
+            chord_labels,
+            diatonic_threshold=settings.key_chord_diatonic_threshold,
+            flip_margin=settings.key_chord_flip_margin,
+        )
 
     # Pick a representative pretty_midi for the blob artifact — we
     # prefer the "other" pass because it carries the largest note
@@ -1093,6 +1292,10 @@ def _run_with_stems(
         events_by_role,
         stems_model_output,
         tempo_map_override=audio_tempo_map,
+        key_label=key_label,
+        time_signature=time_signature,
+        key_stats=key_stats,
+        meter_stats=meter_stats,
         preprocess_stats=None,  # surfaced per-stem below
         cleanup_stats=None,     # surfaced per-stem below
         melody_stats=melody_stats,
