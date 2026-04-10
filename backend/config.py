@@ -127,6 +127,17 @@ class Settings(BaseSettings):
     chord_min_template_score: float = 0.55
     chord_hpss_margin: float = 3.0               # librosa.effects.harmonic margin
 
+    # ---- Post-arrangement simplification (sheet music readability) --------
+    # Aggressive filter that runs AFTER ArrangeService to drop density from
+    # raw transcription levels (~2000 notes per song) down to something a
+    # human could actually read and play. See
+    # backend/services/arrange_simplify.py for the five-step pipeline.
+    arrange_simplify_enabled: bool = True
+    arrange_simplify_min_velocity: int = 40       # drop anything quieter
+    arrange_simplify_chord_merge_beats: float = 0.125   # merge within 1/32 note
+    arrange_simplify_max_onsets_per_beat: int = 6       # density cap
+    arrange_simplify_min_duration_beats: float = 0.25   # 16th note floor
+
     # ---- Demucs source separation (pre-Basic Pitch) -----------------------
     # When enabled, the transcribe stage runs Demucs over the source
     # waveform to split it into {drums, bass, other, vocals} and routes
