@@ -14,6 +14,14 @@ import pytest
 
 from backend.services.onset_refine import OnsetRefineStats, refine_onsets
 
+try:
+    import librosa  # noqa: F401
+    _has_librosa = True
+except ImportError:
+    _has_librosa = False
+
+needs_librosa = pytest.mark.skipif(not _has_librosa, reason="librosa not installed")
+
 
 # Shorthand: (start, end, pitch, amplitude, pitch_bends)
 def _n(start: float, end: float, pitch: int, amp: float, bends=None):
@@ -95,6 +103,7 @@ class _PatchContext:
 # Tests: onsets near a spectral peak get shifted
 # ---------------------------------------------------------------------------
 
+@needs_librosa
 def test_onset_near_peak_gets_shifted(tmp_path):
     """A note whose onset is close to an ODF peak should snap to the peak."""
     odf_times = [i * 0.1 for i in range(20)]
@@ -115,6 +124,7 @@ def test_onset_near_peak_gets_shifted(tmp_path):
     assert stats.mean_shift_sec == pytest.approx(0.02, abs=1e-3)
 
 
+@needs_librosa
 def test_onset_far_from_peak_stays_unchanged(tmp_path):
     """A note whose onset is far from any peak should keep its original onset."""
     odf_times = [i * 0.1 for i in range(20)]
@@ -133,6 +143,7 @@ def test_onset_far_from_peak_stays_unchanged(tmp_path):
     assert refined[0][0] == 0.5  # unchanged
 
 
+@needs_librosa
 def test_max_shift_sec_respected(tmp_path):
     """Even if a peak is the nearest, it must be within max_shift_sec."""
     odf_times = [i * 0.1 for i in range(20)]
@@ -159,6 +170,7 @@ def test_max_shift_sec_respected(tmp_path):
     assert refined2[0][0] == pytest.approx(1.0, abs=1e-6)
 
 
+@needs_librosa
 def test_onset_never_shifts_past_note_end(tmp_path):
     """The refined onset must never be >= end - 0.01."""
     odf_times = [i * 0.1 for i in range(20)]
@@ -227,6 +239,7 @@ def test_missing_librosa_returns_events_unchanged(tmp_path):
     assert refined[0][0] == 1.0
 
 
+@needs_librosa
 def test_multiple_notes_refined_independently(tmp_path):
     """Each note finds its own nearest peak independently."""
     # Two peaks: at t=0.5 (index 5) and t=1.5 (index 15)
@@ -277,6 +290,7 @@ def test_stats_skipped_as_warnings():
     assert "skipped" in warnings[0]
 
 
+@needs_librosa
 def test_no_peaks_found_returns_unchanged(tmp_path):
     """When the ODF has no peaks above median, events pass through."""
     odf_times = [i * 0.1 for i in range(20)]
