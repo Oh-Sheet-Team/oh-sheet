@@ -126,6 +126,7 @@ class TranscribeService:
         # Resolve the audio URI to a local path. For file:// URIs we can read
         # directly; otherwise we'd need to stage to a temp file via the blob
         # store. The blob store import is local to keep the stub path light.
+        staged_tmp: Path | None = None
         try:
             audio_path = _audio_path_from_uri(payload.audio.uri)
         except ValueError as exc:
@@ -145,6 +146,7 @@ class TranscribeService:
             tmp.write(data)
             tmp.close()
             audio_path = Path(tmp.name)
+            staged_tmp = audio_path
             log.debug(
                 "Staged %s → %s for Basic Pitch (%s)",
                 payload.audio.uri, audio_path, exc,
@@ -163,6 +165,12 @@ class TranscribeService:
         except Exception as exc:  # noqa: BLE001 — boundary; we don't want one bad audio file to crash the worker
             log.exception("Basic Pitch inference failed for %s", audio_path)
             return _stub_result(f"inference failed: {exc}")
+        finally:
+            if staged_tmp is not None:
+                try:
+                    staged_tmp.unlink(missing_ok=True)
+                except OSError:
+                    log.debug("failed to clean up staged temp file %s", staged_tmp)
 
         # Persist the raw transcription MIDI to blob storage so it's
         # retrievable alongside the engraved output. Best-effort: a storage

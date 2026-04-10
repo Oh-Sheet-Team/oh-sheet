@@ -479,7 +479,9 @@ def fuse_crepe_and_bp_melody(
             overlap_end = min(b_end, f_end)
             overlap_dur = max(0.0, overlap_end - overlap_start)
             b_dur = b_end - b_start
-            if b_dur > 0 and (overlap_dur / b_dur) > overlap_threshold:
+            f_dur = f_end - f_start
+            min_dur = min(b_dur, f_dur) if f_dur > 0 else b_dur
+            if min_dur > 0 and (overlap_dur / min_dur) > overlap_threshold:
                 dominated = True
                 break
         if not dominated:

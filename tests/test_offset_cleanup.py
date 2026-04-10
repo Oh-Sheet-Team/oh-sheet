@@ -343,7 +343,7 @@ def test_cleanup_for_role_with_envelope():
     events = [_n(0.0, 5.0, 60, 0.8)]
     envelope: AmplitudeEnvelope = [
         (0.0, 0.8), (0.5, 0.9), (1.0, 0.7),
-        (1.5, 0.05), (2.0, 0.03),
+        (1.5, 0.05), (2.0, 0.03), (2.5, 0.02),
     ]
     s = _make_settings()
 

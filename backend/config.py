@@ -6,7 +6,9 @@ All values can be overridden via environment variables prefixed with
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -288,7 +290,7 @@ class Settings(BaseSettings):
     # runtime failure falls back to the Basic Pitch vocals pass so
     # flipping this on is always safe.
     #
-    # Default: **off**. The first A/B against the 25-file clean_midi
+    # Default: **on**. The first A/B against the 25-file clean_midi
     # baseline (seed=42, max_duration=30) came in net-neutral:
     #
     #                          no-crepe   with-crepe     delta
@@ -388,7 +390,7 @@ class Settings(BaseSettings):
     # "madmom" (default) uses madmom DBNBeatProcessor — more robust for
     # variable-tempo music.  "librosa" uses the legacy librosa.beat.beat_track.
     # "auto" tries madmom first, falls back to librosa.
-    beat_tracker: str = "madmom"
+    beat_tracker: Literal["madmom", "librosa", "auto"] = "madmom"
 
     # ---- Adaptive quantization grid (arrange stage) --------------------------
     # Instead of a rigid 1/16th-note grid, estimate the best-fit grid per
@@ -412,6 +414,45 @@ class Settings(BaseSettings):
     duration_refine_tail_sec: float = 0.01
     duration_refine_min_duration_sec: float = 0.03
     duration_refine_hop_length: int = 256
+
+    @field_validator(
+        "cleanup_energy_gate_floor_ratio",
+        "cleanup_octave_amp_ratio",
+        "cleanup_stem_octave_amp_ratio",
+        "cleanup_chords_octave_amp_ratio",
+        "duration_refine_floor_ratio",
+        "crepe_voicing_threshold",
+        "melody_backfill_overlap_fraction",
+        "crepe_hybrid_overlap_threshold",
+        "key_chord_diatonic_threshold",
+        "key_chord_flip_margin",
+        "demucs_overlap",
+    )
+    @classmethod
+    def _validate_unit_ratio(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(f"must be between 0.0 and 1.0, got {v}")
+        return v
+
+    @field_validator(
+        "chord_hmm_self_transition",
+    )
+    @classmethod
+    def _validate_probability(cls, v: float) -> float:
+        if not 0.0 < v < 1.0:
+            raise ValueError(f"must be between 0.0 and 1.0 (exclusive), got {v}")
+        return v
+
+    @field_validator(
+        "chord_hmm_temperature",
+        "chord_hpss_margin",
+        "audio_preprocess_hpss_margin",
+    )
+    @classmethod
+    def _validate_positive_float(cls, v: float) -> float:
+        if v <= 0.0:
+            raise ValueError(f"must be positive, got {v}")
+        return v
 
 
 settings = Settings()

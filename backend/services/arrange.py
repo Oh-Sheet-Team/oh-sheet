@@ -359,7 +359,7 @@ def _normalize_velocity(
     if v_max - v_min < 10:
         shift = _VEL_TARGET_MEAN - v_mean
         def remap(v: int) -> int:
-            return max(1, min(127, int(v + shift)))
+            return max(1, min(127, round(v + shift)))
     else:
         scale = (_VEL_TARGET_MAX - _VEL_TARGET_MIN) / (v_max - v_min)
         offset = _VEL_TARGET_MIN - v_min * scale

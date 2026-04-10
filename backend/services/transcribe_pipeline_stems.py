@@ -499,7 +499,7 @@ def _run_with_stems(
                 hmm_enabled=settings.chord_hmm_enabled,
                 hmm_self_transition=settings.chord_hmm_self_transition,
                 hmm_temperature=settings.chord_hmm_temperature,
-                key_label="C:major",
+                key_label=key_label,
             )
             if chord_stats.skipped and chord_src != audio_path:
                 log.debug(
@@ -513,7 +513,7 @@ def _run_with_stems(
                     hmm_enabled=settings.chord_hmm_enabled,
                     hmm_self_transition=settings.chord_hmm_self_transition,
                     hmm_temperature=settings.chord_hmm_temperature,
-                    key_label="C:major",
+                    key_label=key_label,
                 )
         except Exception as exc:  # noqa: BLE001 — chord recog must not sink transcribe
             log.warning("chord recognition raised: %s", exc)

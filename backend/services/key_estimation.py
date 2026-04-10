@@ -779,7 +779,7 @@ def _is_relative_major_minor(key_a: str, key_b: str) -> bool:
 
 
 def _diatonic_fraction(
-    chords: list,
+    chords: list[Any],
     diatonic_set: set[tuple[int, str]],
 ) -> float:
     """Fraction of total chord duration whose root+quality is in *diatonic_set*.

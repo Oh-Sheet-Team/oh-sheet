@@ -299,13 +299,21 @@ def _gate_offsets_by_energy(
                 continue
 
             threshold = floor_ratio * peak_rms
-            # Scan for the first point after the peak where RMS drops
-            # below the floor.
+            # Scan for a sustained drop below the floor (3+ consecutive
+            # frames) to avoid false triggers from momentary dips like
+            # reverb flutter or transient noise.
             decay_time: float | None = None
+            consecutive = 0
+            hysteresis = 3
             for i in range(lo, hi):
                 if env_rms[i] < threshold and env_times[i] > start:
-                    decay_time = env_times[i]
-                    break
+                    consecutive += 1
+                    if consecutive >= hysteresis:
+                        # Mark decay at the first frame of the run.
+                        decay_time = env_times[i - hysteresis + 1]
+                        break
+                else:
+                    consecutive = 0
 
             if decay_time is not None:
                 new_end = min(end, decay_time + tail_sec)

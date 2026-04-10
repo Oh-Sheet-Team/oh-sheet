@@ -235,7 +235,7 @@ def _run_without_stems(
                 hmm_enabled=settings.chord_hmm_enabled,
                 hmm_self_transition=settings.chord_hmm_self_transition,
                 hmm_temperature=settings.chord_hmm_temperature,
-                key_label="C:major",
+                key_label=key_label,
             )
         except Exception as exc:  # noqa: BLE001 — never let chord recog sink transcribe
             log.warning("chord recognition raised: %s", exc)
