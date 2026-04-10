@@ -5,7 +5,8 @@ WORKDIR /app/frontend
 COPY frontend/ .
 RUN flutter pub get
 # Empty API_BASE_URL → client uses same-origin relative URLs (/v1/...)
-RUN flutter build web --release --dart-define=API_BASE_URL=
+ARG APP_VERSION=dev
+RUN flutter build web --release --dart-define=API_BASE_URL= --dart-define=APP_VERSION=${APP_VERSION}
 
 # ---- Stage 2: Python runtime ----
 # Python 3.12 for forward-compatibility with torch (MT3 model) which
