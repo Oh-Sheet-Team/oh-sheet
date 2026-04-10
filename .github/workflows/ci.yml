@@ -62,3 +62,24 @@ jobs:
         working-directory: frontend
       - run: flutter analyze
         working-directory: frontend
+
+  version-sync:
+    name: Version Sync Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/check_version_sync.sh
+
+  semantic-release-dry-run:
+    name: Semantic Release Dry Run
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install python-semantic-release
+      - run: semantic-release version --dry-run --no-vcs-release
