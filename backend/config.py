@@ -82,6 +82,23 @@ class Settings(BaseSettings):
     cleanup_ghost_max_duration_sec: float = 0.05
     cleanup_ghost_amp_median_scale: float = 0.5
 
+    # Per-role cleanup — bass sustains longer than melody, chords have
+    # more legitimate octave doublings than vocals. These override the
+    # global cleanup_* defaults when cleanup_for_role() is used.
+    cleanup_melody_merge_gap_sec: float = 0.02   # tighter than global 0.03
+    cleanup_melody_ghost_max_duration_sec: float = 0.04  # tighter than global 0.05
+    cleanup_bass_merge_gap_sec: float = 0.05     # looser — bass notes sustain longer
+    cleanup_bass_ghost_max_duration_sec: float = 0.08    # bass has legitimate short notes less often
+    cleanup_chords_merge_gap_sec: float = 0.04   # moderate
+    cleanup_chords_octave_amp_ratio: float = 0.5  # stricter — real chord octave doublings are common
+
+    # Energy gating (Pass 5) — trims suspiciously long note offsets
+    # based on amplitude envelope decay or a duration/amplitude heuristic.
+    cleanup_energy_gate_enabled: bool = True
+    cleanup_energy_gate_max_sustain_sec: float = 2.0
+    cleanup_energy_gate_floor_ratio: float = 0.1
+    cleanup_energy_gate_tail_sec: float = 0.05
+
     # ---- Melody extraction (Phase 2 post-processing) -----------------------
     # Viterbi-based melody / chord split driven by Basic Pitch's
     # ``model_output["contour"]`` salience matrix. See

@@ -72,8 +72,10 @@ from backend.services.stem_separation import (
     separate_stems,
 )
 from backend.services.transcription_cleanup import (
+    AmplitudeEnvelope,
     CleanupStats,
     NoteEvent,
+    cleanup_for_role,
     cleanup_note_events,
 )
 from backend.storage.base import BlobStore
@@ -366,6 +368,38 @@ def _audio_duration_sec(path: Path) -> float | None:
         return None
 
 
+def _compute_amplitude_envelope(
+    audio_path: Path,
+    *,
+    hop_length: int = 441,  # ~10 ms windows at 44100 Hz
+) -> AmplitudeEnvelope | None:
+    """Compute an RMS amplitude envelope from an audio file.
+
+    Returns a list of ``(time_sec, rms_value)`` tuples sampled in ~10 ms
+    windows, suitable for passing to the energy gating cleanup pass.
+
+    Returns ``None`` on any failure (missing librosa, unreadable file)
+    so callers can gracefully fall back to the heuristic cleanup path.
+    """
+    try:
+        import librosa  # noqa: PLC0415 — ships with the basic-pitch extra
+        import numpy as np  # noqa: PLC0415
+
+        y, sr = librosa.load(str(audio_path), sr=None, mono=True)
+        if len(y) == 0:
+            return None
+
+        # librosa.feature.rms returns shape (1, n_frames)
+        rms = librosa.feature.rms(y=y, hop_length=hop_length)[0]
+        times = librosa.frames_to_time(
+            list(range(len(rms))), sr=sr, hop_length=hop_length,
+        )
+        return [(float(t), float(r)) for t, r in zip(times, rms)]
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.debug("amplitude envelope computation failed for %s: %s", audio_path, exc)
+        return None
+
+
 def _serialize_pretty_midi(pm: Any) -> bytes | None:
     """Serialize a pretty_midi.PrettyMIDI to raw .mid bytes.
 
@@ -402,6 +436,7 @@ def _basic_pitch_single_pass(
     audio_path: Path,
     *,
     keep_model_output: bool = True,
+    amplitude_envelope: AmplitudeEnvelope | None = None,
 ) -> _BasicPitchPass:
     """Run preprocess → Basic Pitch → cleanup for one audio file.
 
@@ -472,8 +507,9 @@ def _basic_pitch_single_pass(
                 )
 
     # Phase 1 post-processing — merge fragmented sustains, drop octave
-    # ghosts and quiet ghost-tail notes. Rebuild pretty_midi from the
-    # cleaned list so the blob-stored .mid matches the contract.
+    # ghosts, quiet ghost-tail notes, and energy-gate long offsets. Rebuild
+    # pretty_midi from the cleaned list so the blob-stored .mid matches
+    # the contract.
     cleaned_events, cleanup_stats = cleanup_note_events(
         note_events,
         merge_gap_sec=settings.cleanup_merge_gap_sec,
@@ -481,6 +517,11 @@ def _basic_pitch_single_pass(
         octave_onset_tol_sec=settings.cleanup_octave_onset_tol_sec,
         ghost_max_duration_sec=settings.cleanup_ghost_max_duration_sec,
         ghost_amp_median_scale=settings.cleanup_ghost_amp_median_scale,
+        amplitude_envelope=amplitude_envelope,
+        energy_gate_max_sustain_sec=settings.cleanup_energy_gate_max_sustain_sec,
+        energy_gate_floor_ratio=settings.cleanup_energy_gate_floor_ratio,
+        energy_gate_tail_sec=settings.cleanup_energy_gate_tail_sec,
+        energy_gate_enabled=settings.cleanup_energy_gate_enabled,
     )
     if cleanup_stats.output_count != cleanup_stats.input_count:
         try:
@@ -625,7 +666,17 @@ def _run_without_stems(
     threading it through lets the QualitySignal explain why the
     per-stem code path didn't run.
     """
-    pass_result = _basic_pitch_single_pass(audio_path)
+    # Compute amplitude envelope for energy gating — best-effort.
+    envelope: AmplitudeEnvelope | None = None
+    if settings.cleanup_energy_gate_enabled:
+        try:
+            envelope = _compute_amplitude_envelope(audio_path)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("envelope computation failed for %s: %s", audio_path, exc)
+
+    pass_result = _basic_pitch_single_pass(
+        audio_path, amplitude_envelope=envelope,
+    )
     cleaned_events = pass_result.cleaned_events
     model_output = pass_result.model_output
     midi_data = pass_result.midi_data
@@ -908,6 +959,35 @@ def _run_with_stems(
         if bp.preprocess_stats is not None:
             per_stem_preprocess_stats[label] = bp.preprocess_stats
         per_stem_cleanup_stats[label] = bp.cleanup_stats
+
+    # Per-role cleanup re-run: apply role-specific thresholds + energy
+    # gating on each stem's events. The initial cleanup in
+    # _basic_pitch_single_pass used global thresholds; this second pass
+    # re-cleans with tighter/looser settings matched to each stem's
+    # instrument role (melody = tighter merge, bass = looser sustain,
+    # etc.) and optionally gates offsets using the stem's amplitude
+    # envelope. The role map: vocals -> melody, bass -> bass, other -> chords.
+    _stem_role_map = {"vocals": "melody", "bass": "bass", "other": "chords"}
+    for label, bp in per_stem_passes.items():
+        if bp is None or not bp.cleaned_events:
+            continue
+        role = _stem_role_map.get(label)
+        if role is None:
+            continue
+        # Compute amplitude envelope for energy gating — best-effort.
+        stem_path = getattr(stems, label, None)
+        envelope: AmplitudeEnvelope | None = None
+        if stem_path is not None:
+            try:
+                envelope = _compute_amplitude_envelope(stem_path)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("envelope computation failed for %s: %s", label, exc)
+        recleaned, role_stats = cleanup_for_role(
+            bp.cleaned_events, role, settings,
+            amplitude_envelope=envelope,
+        )
+        bp.cleaned_events = recleaned
+        per_stem_cleanup_stats[label] = role_stats
 
     vocals_bp = per_stem_passes.get("vocals")
     bass_bp = per_stem_passes.get("bass")

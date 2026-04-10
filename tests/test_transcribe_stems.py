@@ -886,7 +886,7 @@ def test_run_without_stems_falls_back_to_midi_data_when_cleaned_events_empty(
     # "cleanup dropped everything" shape.
     empty_pm = pretty_midi.PrettyMIDI()
 
-    def fake_pass(audio_path: Path, *, keep_model_output: bool = True):
+    def fake_pass(audio_path: Path, *, keep_model_output: bool = True, amplitude_envelope=None):
         return _BasicPitchPass(
             cleaned_events=[],
             model_output={},
