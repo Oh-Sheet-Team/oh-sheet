@@ -73,6 +73,10 @@ from backend.services.melody_extraction import (
     backfill_melody_notes,
     extract_melody,
 )
+from backend.services.onset_refine import (
+    OnsetRefineStats,
+    refine_onsets,
+)
 from backend.services.stem_separation import (
     SeparatedStems,
     StemSeparationStats,
@@ -151,6 +155,8 @@ def _pretty_midi_to_transcription_result(
     per_stem_preprocess_stats: dict[str, PreprocessStats] | None = None,
     per_stem_cleanup_stats: dict[str, CleanupStats] | None = None,
     crepe_melody_stats: CrepeMelodyStats | None = None,
+    onset_refine_stats: OnsetRefineStats | None = None,
+    per_stem_onset_refine_stats: dict[str, OnsetRefineStats] | None = None,
 ) -> TranscriptionResult:
     """Convert Basic Pitch's output into our pydantic TranscriptionResult.
 
@@ -280,6 +286,11 @@ def _pretty_midi_to_transcription_result(
         warnings.extend(chord_stats.as_warnings())
     if crepe_melody_stats is not None:
         warnings.extend(crepe_melody_stats.as_warnings())
+    if onset_refine_stats is not None:
+        warnings.extend(onset_refine_stats.as_warnings())
+    if per_stem_onset_refine_stats:
+        for label, ors in per_stem_onset_refine_stats.items():
+            warnings.extend(_prefixed_warnings(label, ors.as_warnings()))
     if total_notes < 20:
         warnings.append(f"Low note count ({total_notes}) — possible quality issue")
     quality = QualitySignal(
@@ -837,6 +848,39 @@ def _run_without_stems(
             # outside every band. Keep the raw stream under PIANO.
             events_by_role = {InstrumentRole.PIANO: cleaned_events}
 
+    # Onset refinement — snap note onsets to spectral onset-strength peaks.
+    # Runs after cleanup + voice split but before _event_to_note() conversion.
+    # Each role's events are refined independently so the ODF peak lookup
+    # uses a single cached computation per audio file.
+    onset_refine_stats_single: OnsetRefineStats | None = None
+    if settings.onset_refine_enabled:
+        all_events: list[NoteEvent] = []
+        for evts in events_by_role.values():
+            all_events.extend(evts)
+        try:
+            refined_all, onset_refine_stats_single = refine_onsets(
+                all_events,
+                audio_path,
+                sr=22050,
+                hop_length=settings.onset_refine_hop_length,
+                max_shift_sec=settings.onset_refine_max_shift_sec,
+            )
+        except Exception as exc:  # noqa: BLE001 — never let onset refine sink transcribe
+            log.warning("onset refinement raised: %s", exc)
+            onset_refine_stats_single = OnsetRefineStats(
+                total_notes=len(all_events), skipped=True,
+            )
+            onset_refine_stats_single.warnings.append(f"onset-refine: exception: {exc}")
+        else:
+            # Scatter the refined events back into their per-role buckets.
+            # The concatenation order is deterministic (dict insertion order)
+            # so we can slice the flat refined list by the same lengths.
+            offset = 0
+            for role in list(events_by_role.keys()):
+                role_len = len(events_by_role[role])
+                events_by_role[role] = refined_all[offset : offset + role_len]
+                offset += role_len
+
     # Waveform-derived tempo_map (best-effort; None on failure). This
     # lands before chord recognition so if we ever decide to share the
     # beat grid, the sequencing is already correct.
@@ -931,6 +975,7 @@ def _run_without_stems(
         chord_stats=chord_stats,
         chord_labels=chord_labels,
         stem_stats=stem_stats,
+        onset_refine_stats=onset_refine_stats_single,
     )
     midi_bytes = _serialize_pretty_midi(blob_midi)
     return result, midi_bytes
@@ -1265,6 +1310,43 @@ def _run_with_stems(
         stem_stats.warnings.append("all stems empty; fell back to single-mix")
         return _run_without_stems(audio_path, stem_stats)
 
+    # Onset refinement — snap note onsets to spectral onset-strength peaks.
+    # On the stems path we refine each role's events using the corresponding
+    # stem's audio, which gives a cleaner ODF than the full mix.
+    _role_stem_map = {
+        InstrumentRole.MELODY: getattr(stems, "vocals", None),
+        InstrumentRole.BASS: getattr(stems, "bass", None),
+        InstrumentRole.CHORDS: getattr(stems, "other", None),
+    }
+    per_stem_onset_stats: dict[str, OnsetRefineStats] = {}
+    if settings.onset_refine_enabled:
+        _role_label_map = {
+            InstrumentRole.MELODY: "vocals",
+            InstrumentRole.BASS: "bass",
+            InstrumentRole.CHORDS: "other",
+        }
+        for role, role_events in list(events_by_role.items()):
+            stem_audio = _role_stem_map.get(role)
+            refine_audio = stem_audio if stem_audio is not None else audio_path
+            label = _role_label_map.get(role, str(role))
+            try:
+                refined_events, role_or_stats = refine_onsets(
+                    role_events,
+                    refine_audio,
+                    sr=22050,
+                    hop_length=settings.onset_refine_hop_length,
+                    max_shift_sec=settings.onset_refine_max_shift_sec,
+                )
+            except Exception as exc:  # noqa: BLE001 — never let onset refine sink transcribe
+                log.warning("onset refinement raised for %s: %s", label, exc)
+                role_or_stats = OnsetRefineStats(
+                    total_notes=len(role_events), skipped=True,
+                )
+                role_or_stats.warnings.append(f"onset-refine: exception: {exc}")
+            else:
+                events_by_role[role] = refined_events
+            per_stem_onset_stats[label] = role_or_stats
+
     # Tempo map — prefer the drums stem when enabled and available.
     # A drums-stem beat track that returns no beats (possible on
     # cappella / ambient material) falls back to the mix so the
@@ -1400,6 +1482,7 @@ def _run_with_stems(
         per_stem_preprocess_stats=per_stem_preprocess_stats,
         per_stem_cleanup_stats=per_stem_cleanup_stats,
         crepe_melody_stats=crepe_stats,
+        per_stem_onset_refine_stats=per_stem_onset_stats if per_stem_onset_stats else None,
     )
     midi_bytes = _serialize_pretty_midi(combined_midi) if combined_midi else None
     return result, midi_bytes
