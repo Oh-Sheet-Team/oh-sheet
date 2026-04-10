@@ -400,9 +400,16 @@ class Settings(BaseSettings):
     # ---- Duration refinement (per-pitch CQT energy gating) ------------------
     # Refine note offsets by tracking energy decay at each note's specific
     # pitch via CQT spectrogram.  More precise than global RMS gating.
+    #
+    # Tuned via eval sweep (25-file clean_midi, seed=42):
+    #   floor_ratio  tail_sec  F1(no-off)  F1(w/off)  dur_MAE  dur_ratio
+    #       0.15       0.03       0.373      0.132     639ms     4.28
+    #       0.40       0.01       0.378      0.136     590ms     3.97  ← chosen
+    #       0.55       0.01       0.371      0.130     569ms     4.27
+    # floor=0.40 recovers baseline F1 while cutting duration MAE by 49ms.
     duration_refine_enabled: bool = True
-    duration_refine_floor_ratio: float = 0.15
-    duration_refine_tail_sec: float = 0.03
+    duration_refine_floor_ratio: float = 0.40
+    duration_refine_tail_sec: float = 0.01
     duration_refine_min_duration_sec: float = 0.03
     duration_refine_hop_length: int = 256
 
