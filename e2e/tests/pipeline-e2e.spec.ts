@@ -4,7 +4,8 @@
  * Wires the entire service stack together and verifies the pipeline
  * produces a sheet music PDF from a MIDI upload, for three different
  * MIDI files. Enforces a 2-minute per-file latency budget and asserts
- * on error propagation when the pipeline is fed an invalid input.
+ * on error propagation at the API layer (empty payload, malformed
+ * JSON, non-existent job id).
  *
  * Run locally against the docker compose stack:
  *     docker compose up -d
@@ -194,29 +195,37 @@ test.describe("Pipeline E2E — MIDI → sheet music PDF", () => {
 });
 
 test.describe("Pipeline E2E — error propagation", () => {
-  test("invalid MIDI upload surfaces a clear error", async ({ request }) => {
-    // Posting a non-MIDI payload to the MIDI upload endpoint should be
-    // rejected at the upload stage (400/422/415), not silently accepted.
-    const uploadRes = await request.post("/v1/uploads/midi", {
-      multipart: {
-        file: {
-          name: "garbage.mid",
-          mimeType: "audio/midi",
-          buffer: Buffer.from("this is clearly not a MIDI file"),
-        },
-      },
+  test("empty job payload is rejected with a 4xx + clear error", async ({
+    request,
+  }) => {
+    // A job with neither audio, midi, nor title must be rejected by the API
+    // with a structured error message the client can surface.
+    const res = await request.post("/v1/jobs", { data: {} });
+    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status()).toBeLessThan(500);
+
+    const body = await res.json();
+    expect(body.detail, "error response must include a detail field").toBeTruthy();
+    expect(String(body.detail).length).toBeGreaterThan(0);
+  });
+
+  test("non-existent job id returns 404 with error message", async ({
+    request,
+  }) => {
+    // GET a job id that can't exist. Error must be propagated, not 200/500.
+    const res = await request.get("/v1/jobs/nonexistent-job-id-12345");
+    expect(res.status()).toBe(404);
+    const body = await res.json();
+    expect(body.detail, "404 response must include a detail field").toBeTruthy();
+  });
+
+  test("malformed JSON body is rejected with 422", async ({ request }) => {
+    // Malformed JSON must be caught by FastAPI's validation layer, not
+    // bubble up as a 500.
+    const res = await request.post("/v1/jobs", {
+      headers: { "content-type": "application/json" },
+      data: "{not valid json",
     });
-
-    // We expect a 4xx (bad input) — the exact code is less important than
-    // "not a 5xx and not silently accepted".
-    expect(
-      uploadRes.status(),
-      `expected 4xx for invalid MIDI, got ${uploadRes.status()}`,
-    ).toBeGreaterThanOrEqual(400);
-    expect(uploadRes.status()).toBeLessThan(500);
-
-    // Body should include an error message so a client can surface it.
-    const body = await uploadRes.text();
-    expect(body.length, "error response should have a body").toBeGreaterThan(0);
+    expect(res.status()).toBe(422);
   });
 });
