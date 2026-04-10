@@ -70,8 +70,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash scripts/check_version_sync.sh
 
-  semantic-release-dry-run:
-    name: Semantic Release Dry Run
+  semantic-release-config:
+    name: Semantic Release Config Check
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
@@ -82,4 +82,8 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install python-semantic-release
-      - run: semantic-release version --print --no-vcs-release
+      - name: Validate config parses correctly
+        run: |
+          # Exit 0 = version printed, 1 = no release (expected on PR branch), 2+ = config error
+          semantic-release version --print --no-vcs-release; rc=$?
+          if [ $rc -gt 1 ]; then exit $rc; fi
