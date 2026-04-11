@@ -17,6 +17,7 @@ import logging
 from pathlib import Path
 from urllib.parse import urlparse
 
+from backend.config import settings
 from backend.contracts import (
     SCHEMA_VERSION,
     InputBundle,
@@ -24,6 +25,7 @@ from backend.contracts import (
     RemoteAudioFile,
     RemoteMidiFile,
 )
+from backend.services.cover_search import find_piano_cover, probe_youtube_metadata
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +138,60 @@ def _download_youtube_sync(url: str, blob_store) -> tuple[RemoteAudioFile, str |
         ), info.get("title"), info.get("uploader") or info.get("channel")
 
 
+def _maybe_swap_for_cover_sync(url: str) -> str:
+    """If a high-scoring piano cover of ``url`` exists, return its URL;
+    otherwise return ``url`` unchanged.
+
+    This is the ingest stage's "fast path" router (see
+    ``backend/services/cover_search.py``). The rationale: Basic Pitch
+    transcribes every audible pitch as a piano note, so feeding it a
+    polyphonic pop mix produces dense, unplayable sheet music. A clean
+    piano cover is monophonic or piano-only, which is exactly what
+    Basic Pitch is good at.
+
+    Silent-failure contract: ANY exception or non-match falls back to
+    the original URL. Job continues, user gets the direct transcription
+    they implicitly asked for. This function is called via
+    ``asyncio.to_thread`` because both probe and search are blocking
+    network I/O.
+    """
+    try:
+        probed = probe_youtube_metadata(url)
+    except Exception as exc:  # noqa: BLE001 — silent-failure boundary
+        log.warning("ingest: cover_search probe crashed for %r: %s", url, exc)
+        return url
+
+    if probed is None:
+        log.info("ingest: cover_search could not probe metadata for %r", url)
+        return url
+
+    title, artist = probed
+    try:
+        match = find_piano_cover(
+            title,
+            artist,
+            min_score=settings.cover_search_min_score,
+        )
+    except Exception as exc:  # noqa: BLE001 — defensive depth; find_piano_cover
+                              # is documented silent-failure but we must never
+                              # crash the job on a cover-search bug.
+        log.warning("ingest: cover_search find crashed for %r: %s", title, exc)
+        return url
+
+    if match is None:
+        log.info(
+            "ingest: cover_search no match for title=%r artist=%r — using original URL",
+            title, artist,
+        )
+        return url
+
+    log.info(
+        "ingest: cover_search SWAP url=%r → %r (channel=%r score=%d)",
+        url, match.url, match.channel, match.score,
+    )
+    return match.url
+
+
 def _file_path(uri: str) -> Path | None:
     """Return a local Path for ``file://`` URIs, or None for anything else."""
     parsed = urlparse(uri)
@@ -217,8 +273,25 @@ class IngestService:
             and payload.metadata.title is not None
             and is_youtube_url(payload.metadata.title)
         ):
+            download_url = payload.metadata.title
+
+            # Cover-search fast path: before downloading, try to swap the
+            # user's URL for a clean piano cover. Gated by BOTH the
+            # per-job flag (prefer_clean_source) and the global kill
+            # switch (settings.cover_search_enabled), so operators can
+            # disable the feature globally without any per-request change.
+            # The helper enforces the silent-failure contract — any
+            # failure returns ``download_url`` unchanged.
+            if (
+                payload.metadata.prefer_clean_source
+                and settings.cover_search_enabled
+            ):
+                download_url = await asyncio.to_thread(
+                    _maybe_swap_for_cover_sync, download_url,
+                )
+
             dl_result = await asyncio.to_thread(
-                _download_youtube_sync, payload.metadata.title, self._blob_store,
+                _download_youtube_sync, download_url, self._blob_store,
             )
             audio, yt_title, yt_artist = dl_result
             if yt_title:
