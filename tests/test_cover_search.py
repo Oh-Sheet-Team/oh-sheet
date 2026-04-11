@@ -204,12 +204,13 @@ class TestScoreCandidate:
             entry, wanted_title="Bohemian Rhapsody", wanted_artist="Queen"
         ) == 110
 
-    def test_realistic_good_match_clears_70_threshold(self):
+    def test_realistic_good_match_scores_60(self):
         from backend.services.cover_search import score_candidate
         # Random piano cover channel, clear piano cover title, title matches.
-        # 30 (piano cover) + 20 (title) + 10 (artist) = 60. Below 70.
-        # Real policy: needs either allowlist OR two strong signals AND
-        # title match. This test documents the threshold behavior.
+        # 30 (piano cover) + 20 (title) + 10 (artist) = 60.
+        # This exactly meets the default threshold of 60 — the dry-run
+        # showed most legitimate pop covers land here, so we want them to
+        # clear. Bumping the scorer must not drop this below 60.
         entry = _entry(
             title="Bohemian Rhapsody - Queen Piano Cover",
             channel="Some Random Channel",
@@ -315,6 +316,28 @@ class TestFindPianoCover:
         called_query = mock_search.call_args.args[0]
         assert "river flows in you" in called_query.lower()
         assert "piano cover" in called_query.lower()
+
+    def test_default_threshold_is_60_accepts_triple_signal_match(self):
+        from backend.services.cover_search import find_piano_cover
+
+        # A non-allowlist channel with the full "piano cover + title +
+        # artist" triple scores exactly 60. The default threshold must
+        # let this through — this is the common case for pop covers,
+        # surfaced by the dry-run against real YouTube.
+        search_results = [
+            _entry(
+                title="Someone Like You - Adele Piano Cover",
+                channel="Random Pianist",
+            ),
+        ]
+
+        with patch("backend.services.cover_search._yt_dlp_search") as mock_search:
+            mock_search.return_value = search_results
+            # No min_score override — must use the module default.
+            result = find_piano_cover(title="Someone Like You", artist="Adele")
+
+        assert result is not None, "score 60 must clear the default threshold"
+        assert result.score == 60
 
 
 # ---------------------------------------------------------------------------
