@@ -315,3 +315,93 @@ class TestFindPianoCover:
         called_query = mock_search.call_args.args[0]
         assert "river flows in you" in called_query.lower()
         assert "piano cover" in called_query.lower()
+
+
+# ---------------------------------------------------------------------------
+# Layer 4: metadata probe for the original URL
+# ---------------------------------------------------------------------------
+#
+# Before we can search for a cover, we need to know the song title + artist
+# of whatever the user pasted. yt-dlp can fetch video metadata (title,
+# uploader, track, artist) without downloading any audio. probe_youtube_metadata
+# wraps that call and normalizes the output into a (title, artist) tuple that
+# feeds directly into find_piano_cover().
+
+
+class TestProbeYoutubeMetadata:
+    """Resolves a YouTube URL to (song_title, artist) using yt-dlp's
+    extract_info(download=False). The title should come from the
+    'track' or 'title' field; the artist from 'artist', 'creator', or
+    'uploader' depending on which the video has."""
+
+    def test_extracts_music_metadata_when_present(self):
+        from backend.services.cover_search import probe_youtube_metadata
+
+        # Official music videos often have structured 'track' and 'artist'
+        # fields that YouTube Music populates.
+        with patch("backend.services.cover_search._yt_dlp_extract_info") as mock_ei:
+            mock_ei.return_value = {
+                "title": "Bohemian Rhapsody (Official Video)",
+                "track": "Bohemian Rhapsody",
+                "artist": "Queen",
+                "uploader": "Queen Official",
+            }
+            title, artist = probe_youtube_metadata("https://youtu.be/fJ9rUzIMcZQ")
+
+        # Title is lowercased by normalize_title so it can feed directly
+        # into find_piano_cover's substring matching.
+        assert title == "bohemian rhapsody"
+        assert artist == "Queen"
+
+    def test_falls_back_to_title_when_track_missing(self):
+        from backend.services.cover_search import probe_youtube_metadata
+
+        # User uploads without music metadata — fall back to the 'title'
+        # field (which normalize_title will clean up downstream).
+        with patch("backend.services.cover_search._yt_dlp_extract_info") as mock_ei:
+            mock_ei.return_value = {
+                "title": "Hotel California [Official Video]",
+                "uploader": "Eagles VEVO",
+            }
+            title, artist = probe_youtube_metadata("https://youtu.be/BciS5krYL80")
+
+        # normalize_title strips the "[Official Video]" noise tag
+        assert title == "hotel california"
+        # artist falls back to uploader
+        assert artist == "Eagles VEVO"
+
+    def test_returns_none_on_yt_dlp_failure(self):
+        from backend.services.cover_search import probe_youtube_metadata
+
+        # Network failure, invalid URL, geo-blocked — all silent.
+        with patch("backend.services.cover_search._yt_dlp_extract_info") as mock_ei:
+            mock_ei.side_effect = RuntimeError("network down")
+            result = probe_youtube_metadata("https://youtu.be/bad")
+
+        assert result is None
+
+    def test_returns_none_when_metadata_has_no_title(self):
+        from backend.services.cover_search import probe_youtube_metadata
+
+        # Without any title-shaped field, we can't form a search query.
+        with patch("backend.services.cover_search._yt_dlp_extract_info") as mock_ei:
+            mock_ei.return_value = {"uploader": "Random Channel"}
+            result = probe_youtube_metadata("https://youtu.be/weird")
+
+        assert result is None
+
+    def test_prefers_artist_field_over_creator_and_uploader(self):
+        from backend.services.cover_search import probe_youtube_metadata
+
+        # Precedence: artist > creator > uploader. Make sure the function
+        # picks the most-specific one available.
+        with patch("backend.services.cover_search._yt_dlp_extract_info") as mock_ei:
+            mock_ei.return_value = {
+                "track": "Clocks",
+                "artist": "Coldplay",
+                "creator": "Coldplay VEVO",
+                "uploader": "Coldplay - Topic",
+            }
+            _, artist = probe_youtube_metadata("https://youtu.be/clocks")
+
+        assert artist == "Coldplay"
