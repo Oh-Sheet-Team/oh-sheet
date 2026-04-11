@@ -1,9 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ohsheet_app/widgets/version_footer.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 void main() {
-  testWidgets('VersionFooter displays version text', (tester) async {
+  testWidgets('VersionFooter shows pubspec version when APP_VERSION unset', (tester) async {
+    PackageInfo.setMockInitialValues(
+      appName: 'Oh Sheet',
+      packageName: 'ohsheet_app',
+      version: '0.1.0',
+      buildNumber: '1',
+      buildSignature: '',
+    );
+
     await tester.pumpWidget(
       const MaterialApp(
         home: Scaffold(
@@ -11,8 +20,8 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
 
-    // Default value when APP_VERSION is not defined at compile time
-    expect(find.text('vdev'), findsOneWidget);
+    expect(find.text('v0.1.0+1'), findsOneWidget);
   });
 }
