@@ -284,9 +284,11 @@ def _render_musicxml_bytes(
         #     except Exception:
         #         pass
 
-        # Quantize to a 16th-note + triplet grid so OSMD can render it.
-        # Without explicit divisors, music21 defaults to divisions=10080
-        # which produces MusicXML that OSMD chokes on.
+        # Quantize to a 16th-note + triplet grid. With
+        # defaults.divisionsPerQuarter=12 forced below, every quantized
+        # quarterLength lands exactly on a grid tick (16th = 3, triplet-8th
+        # = 4, quarter = 12) so <duration> values are integers without
+        # post-hoc rescaling.
         part.quantize(quarterLengthDivisors=(4, 3), inPlace=True)
         part.makeNotation(inPlace=True)
         s.insert(0, part)
@@ -308,70 +310,47 @@ def _render_musicxml_bytes(
         ),
     )
 
+    # Force divisions=12 at the exporter boundary. music21's MeasureExporter
+    # reads ``defaults.divisionsPerQuarter`` verbatim when stamping the
+    # ``<divisions>`` tag (m21ToXml.setMxAttributesObjectForStartOfMeasure)
+    # and the shipped default is 10080 — producing MusicXML that OSMD
+    # chokes on. 12 = LCM(4, 3) which is the finest grid we need to
+    # represent the (4, 3) quarterLengthDivisors quantization: 16th = 3
+    # divisions, 8th = 6, triplet-8th = 4, quarter = 12. Done here
+    # (process-global, restored after write) rather than at module import
+    # so non-engrave music21 callers keep the upstream default.
     with tempfile.NamedTemporaryFile(suffix=".musicxml", delete=False) as tmp:
         tmp_path = Path(tmp.name)
+    prior_divisions = music21.defaults.divisionsPerQuarter
     try:
+        music21.defaults.divisionsPerQuarter = 12
         s.write("musicxml", fp=str(tmp_path))
         raw = tmp_path.read_bytes()
         return _sanitize_musicxml_for_osmd(raw)
     finally:
+        music21.defaults.divisionsPerQuarter = prior_divisions
         tmp_path.unlink(missing_ok=True)
 
 
 def _sanitize_musicxml_for_osmd(raw: bytes) -> bytes:
     """Post-process music21 MusicXML to fix OSMD compatibility issues.
 
-    OSMD's VexFlow backend crashes (parentVoiceEntry) when:
-    1. <divisions> is very high (10080) — we reduce to 4 (16th-note grid)
-    2. Voice numbers exceed 2 per part — we collapse to voice 1
-    3. Voice 0 exists — OSMD expects 1-indexed voices
+    As of PR-9, ``<divisions>`` is now controlled at the source via
+    ``music21.defaults.divisionsPerQuarter = 12`` (see
+    ``_render_musicxml_bytes``), so the old post-hoc divisions-and-duration
+    rescaling is gone — durations are correct by construction.
 
-    We also scale all <duration> values proportionally when changing divisions.
+    The remaining fix is voice collapse: OSMD's VexFlow backend crashes
+    (``parentVoiceEntry`` undefined) on 3+ voices per part, so we flatten
+    everything to voice 1. This destroys music21's voice separation
+    (stems-up melody / stems-down accompaniment) and will be replaced
+    with a 2-voice-preserving clamp in PR-10.
     """
     import re
 
     text = raw.decode("utf-8")
-
-    # Find the current divisions value
-    div_match = re.search(r"<divisions>(\d+)</divisions>", text)
-    if div_match:
-        old_div = int(div_match.group(1))
-        new_div = 4  # 4 divisions per quarter = 16th-note grid
-
-        if old_div != new_div and old_div > 0:
-            ratio = new_div / old_div
-
-            # Replace all <divisions> tags
-            text = re.sub(
-                r"<divisions>\d+</divisions>",
-                f"<divisions>{new_div}</divisions>",
-                text,
-            )
-
-            # Scale all <duration> values
-            def scale_duration(m: re.Match) -> str:
-                old_dur = int(m.group(1))
-                new_dur = max(1, round(old_dur * ratio))
-                return f"<duration>{new_dur}</duration>"
-
-            text = re.sub(r"<duration>(\d+)</duration>", scale_duration, text)
-
-            # Scale <forward> and <backup> durations too
-            def scale_forward(m: re.Match) -> str:
-                tag = m.group(1)
-                old_dur = int(m.group(2))
-                new_dur = max(1, round(old_dur * ratio))
-                return f"<{tag}>\n        <duration>{new_dur}</duration>"
-
-            text = re.sub(
-                r"<(forward|backup)>\s*<duration>(\d+)</duration>",
-                scale_forward,
-                text,
-            )
-
-    # Collapse all voices to voice 1 (OSMD chokes on 3+ voices per part)
+    # Collapse all voices to voice 1 (OSMD chokes on 3+ voices per part).
     text = re.sub(r"<voice>\d+</voice>", "<voice>1</voice>", text)
-
     return text.encode("utf-8")
 
 

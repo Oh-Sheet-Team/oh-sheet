@@ -217,17 +217,24 @@ def test_l2_voice_numbers_in_range(name: str, engraved_artifacts):
 
 
 @pytest.mark.parametrize("name", FIXTURE_NAMES)
-def test_l2_divisions_reasonable(name: str, engraved_artifacts):
-    """``<divisions>`` must stay small (≤480) — OSMD chokes on the
-    10080 value music21 picks by default."""
+def test_l2_divisions_is_twelve(name: str, engraved_artifacts):
+    """``<divisions>`` must be exactly 12 per quarter.
+
+    PR-9 (plan phase 2.4) sets ``music21.defaults.divisionsPerQuarter=12``
+    before export so the grid is fixed by construction — 16th = 3
+    divisions, 8th = 6, triplet-8th = 4, quarter = 12. Prior to PR-9 the
+    value was music21's shipped default of 10080, which OSMD cannot
+    consume; this test would catch either regression.
+    """
     from lxml import etree
 
     musicxml, _ = engraved_artifacts[name]
     root = etree.fromstring(musicxml)
     divisions = [int(e.text) for e in root.iter("divisions")]
     assert divisions, f"{name}: no <divisions> element in MusicXML"
-    for d in divisions:
-        assert 1 <= d <= 480, f"{name}: <divisions>{d}</divisions> outside [1,480]"
+    assert set(divisions) == {12}, (
+        f"{name}: expected <divisions>12</divisions>, got {sorted(set(divisions))}"
+    )
 
 
 @pytest.mark.parametrize("name", FIXTURE_NAMES)
@@ -396,6 +403,26 @@ def test_l2_rh_only_fixture_still_single_part(engraved_artifacts):
     assert len(root.findall("part")) == 1
     staves = [int(e.text) for e in root.iter("staves")]
     assert staves and max(staves) == 2
+
+
+def test_engrave_does_not_leak_music21_defaults():
+    """``music21.defaults.divisionsPerQuarter`` must be restored after engrave.
+
+    PR-9 overrides this global to 12 around ``s.write("musicxml", ...)``
+    so OSMD-friendly divisions come out by construction. The override
+    must be wrapped in try/finally so that other music21 callers (eval
+    scripts, arrange's makeNotation in a shared process, etc.) keep
+    seeing the upstream default of 10080.
+    """
+    import music21
+
+    from backend.services.engrave import _engrave_sync
+
+    prior = music21.defaults.divisionsPerQuarter
+    _pdf, _xml, _midi = _engrave_sync(
+        load_score_fixture("c_major_scale"), title="t", composer="c"
+    )
+    assert music21.defaults.divisionsPerQuarter == prior
 
 
 def test_l2_engraved_flags_reflect_rendered_content(engraved_artifacts):
