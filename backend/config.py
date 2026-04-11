@@ -11,6 +11,8 @@ from typing import Literal
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from backend.contracts import ScorePipelineMode
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -453,6 +455,10 @@ class Settings(BaseSettings):
         if v <= 0.0:
             raise ValueError(f"must be positive, got {v}")
         return v
+
+    # Score path after transcription (or MIDI-derived TranscriptionResult).
+    # Env: ``OHSHEET_SCORE_PIPELINE`` — ``arrange`` (default) or ``condense_transform``.
+    score_pipeline: ScorePipelineMode = "arrange"
 
 
 settings = Settings()
