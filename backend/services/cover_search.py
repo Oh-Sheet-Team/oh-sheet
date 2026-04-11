@@ -279,3 +279,69 @@ def _yt_dlp_search(query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
         if "url" not in e and "webpage_url" in e:
             e["url"] = e["webpage_url"]
     return entries
+
+
+# ---------------------------------------------------------------------------
+# Metadata probe for a single URL
+# ---------------------------------------------------------------------------
+
+
+def probe_youtube_metadata(url: str) -> tuple[str, str | None] | None:
+    """Fetch (song_title, artist) for a YouTube URL without downloading audio.
+
+    Used by the ingest stage to resolve the user's submitted URL into a
+    searchable song identity before calling ``find_piano_cover``. The
+    returned title is lowercased and noise-stripped via ``normalize_title``
+    so it can feed straight into the search query.
+
+    Field precedence:
+      * title: ``track`` → ``title`` (noise-stripped)
+      * artist: ``artist`` → ``creator`` → ``uploader``
+
+    Returns ``None`` on any failure (network error, invalid URL,
+    metadata dict has no title-shaped field). Like ``find_piano_cover``,
+    this function follows the silent-failure contract.
+    """
+    try:
+        info = _yt_dlp_extract_info(url)
+    except Exception as exc:  # noqa: BLE001 — silent-failure boundary
+        log.warning("cover_search: metadata probe failed for %r: %s", url, exc)
+        return None
+
+    if not info:
+        return None
+
+    # Title: prefer 'track' (structured music metadata) over 'title'
+    # (human-readable video title, often has noise tags). Normalize
+    # whichever we pick so downstream callers get a clean search key.
+    raw_title = info.get("track") or info.get("title")
+    if not raw_title:
+        return None
+    title = normalize_title(raw_title)
+    if not title:
+        return None
+
+    # Artist: precedence artist > creator > uploader.
+    artist = info.get("artist") or info.get("creator") or info.get("uploader")
+
+    return title, artist
+
+
+def _yt_dlp_extract_info(url: str) -> dict[str, Any] | None:
+    """Fetch a single video's metadata via yt-dlp without downloading.
+
+    The thin I/O wrapper that tests mock. Uses the same suppress-noise
+    flags as ``_yt_dlp_search`` but targets a single URL instead of a
+    search query.
+    """
+    import yt_dlp  # local import — keeps yt-dlp out of the test import path
+
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "socket_timeout": 15,
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(url, download=False)
