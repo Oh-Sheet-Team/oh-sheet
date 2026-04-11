@@ -86,6 +86,8 @@ async def test_transcription_midi_uri_survives_pipeline(runner):
 
     assert result.transcription_midi_uri is not None
     assert "basic-pitch.mid" in result.transcription_midi_uri
+    assert result.chord_progression_uri is not None
+    assert "chord-progression.txt" in result.chord_progression_uri
 
 
 @pytest.mark.asyncio

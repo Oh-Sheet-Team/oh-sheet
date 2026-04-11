@@ -38,6 +38,7 @@ from pathlib import Path
 from backend.config import settings
 from backend.contracts import InputBundle, TranscriptionResult
 from backend.services.stem_separation import separate_stems
+from backend.services.harmony_analysis import chord_progression_dump_text
 from backend.services.transcribe_audio import _audio_path_from_uri
 from backend.services.transcribe_inference import _BasicPitchPass  # noqa: F401 — re-export for tests
 from backend.services.transcribe_midi import _rebuild_blob_midi  # noqa: F401 — re-export for tests
@@ -186,7 +187,37 @@ class TranscribeService:
             except Exception as exc:  # noqa: BLE001 — best-effort persistence
                 log.warning("Failed to persist transcription MIDI for %s: %s", job_id, exc)
 
+        chord_dump_uri: str | None = None
+        if self.blob_store is not None:
+            dump_key = (
+                f"jobs/{job_id}/transcription/chord-progression.txt"
+                if job_id
+                else "tmp/chord-progression.txt"
+            )
+            try:
+                body = chord_progression_dump_text(
+                    result.analysis.chords,
+                    key=result.analysis.key,
+                    job_id=job_id,
+                )
+                chord_dump_uri = self.blob_store.put_bytes(
+                    dump_key,
+                    body.encode("utf-8"),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort persistence
+                log.warning("Failed to persist chord progression text: %s", exc)
+
+        if chord_dump_uri:
+            result = result.model_copy(update={"chord_progression_uri": chord_dump_uri})
+
         n_notes = sum(len(t.notes) for t in result.midi_tracks)
+        log.info(
+            "transcribe: harmony job_id=%s key=%s chords=%d chord_dump=%s",
+            job_id or "—",
+            result.analysis.key,
+            len(result.analysis.chords),
+            chord_dump_uri or "—",
+        )
         log.info(
             "transcribe: done job_id=%s tracks=%d notes=%d transcription_midi=%s",
             job_id or "—",

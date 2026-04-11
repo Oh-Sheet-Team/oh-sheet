@@ -9,7 +9,7 @@ import 'package:ohsheet_app/api/client.dart';
 import 'package:ohsheet_app/api/models.dart';
 import 'package:ohsheet_app/screens/result_screen.dart';
 
-JobSummary _fakeJob() => JobSummary(
+JobSummary _fakeJob({bool withChordProgression = true}) => JobSummary(
       jobId: 'test-abc',
       status: 'succeeded',
       variant: 'full',
@@ -19,6 +19,7 @@ JobSummary _fakeJob() => JobSummary(
         'pdf_uri': 'file:///tmp/score.pdf',
         'musicxml_uri': 'file:///tmp/score.xml',
         'humanized_midi_uri': 'file:///tmp/score.mid',
+        if (withChordProgression) 'chord_progression_uri': 'file:///tmp/chords.txt',
       },
     );
 
@@ -26,8 +27,8 @@ OhSheetApi _mockApi() => OhSheetApi(
       client: http_testing.MockClient((_) async => http.Response('{}', 404)),
     );
 
-Widget _app() => MaterialApp(
-      home: ResultScreen(api: _mockApi(), job: _fakeJob()),
+Widget _app({bool withChordProgression = true}) => MaterialApp(
+      home: ResultScreen(api: _mockApi(), job: _fakeJob(withChordProgression: withChordProgression)),
     );
 
 void main() {
@@ -64,6 +65,16 @@ void main() {
     testWidgets('shows MusicXML download button', (tester) async {
       await tester.pumpWidget(_app());
       expect(find.textContaining('MusicXML'), findsOneWidget);
+    });
+
+    testWidgets('shows chord progression download when backend provided a URI', (tester) async {
+      await tester.pumpWidget(_app(withChordProgression: true));
+      expect(find.textContaining('Chord progression'), findsOneWidget);
+    });
+
+    testWidgets('hides chord progression download when no URI', (tester) async {
+      await tester.pumpWidget(_app(withChordProgression: false));
+      expect(find.textContaining('Chord progression'), findsNothing);
     });
 
     testWidgets('shows transcribe another button', (tester) async {

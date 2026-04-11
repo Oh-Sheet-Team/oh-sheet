@@ -162,6 +162,10 @@ class RealtimeChordEvent(BaseModel):
     label: str                                 # Harte notation, e.g. "C:maj7"
     root: int
     confidence: float = Field(..., ge=0.0, le=1.0)
+    quality: str | None = None
+    bass: int | None = Field(default=None, ge=0, le=11)
+    roman_numeral: str | None = None
+    source: str | None = None
 
 
 class Section(BaseModel):
@@ -184,6 +188,7 @@ class TranscriptionResult(BaseModel):
     analysis: HarmonicAnalysis
     quality: QualitySignal
     transcription_midi_uri: str | None = None
+    chord_progression_uri: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +212,10 @@ class ScoreChordEvent(BaseModel):
     duration_beat: float
     label: str                                 # Harte notation
     root: int
+    quality: str | None = None
+    bass: int | None = Field(default=None, ge=0, le=11)
+    roman_numeral: str | None = None
+    source: str | None = None
 
 
 class ScoreSection(BaseModel):
@@ -310,6 +319,7 @@ class EngravedOutput(BaseModel):
     humanized_midi_uri: str
     audio_preview_uri: str | None = None
     transcription_midi_uri: str | None = None
+    chord_progression_uri: str | None = None
 
 
 # ---------------------------------------------------------------------------

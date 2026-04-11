@@ -58,6 +58,32 @@ def test_artifact_download_midi(client):
     assert response.content.startswith(b"MThd")
 
 
+def test_artifact_chord_progression_missing_for_midi_upload(client):
+    """midi_upload skips transcribe — no chord dump URI on the final output."""
+    job_id = _submit_midi_job(client)
+    _wait_for_succeeded(client, job_id)
+
+    response = client.get(f"/v1/artifacts/{job_id}/chord_progression")
+    assert response.status_code == 404
+    assert "chord_progression" in response.json()["detail"]
+
+
+def test_artifact_chord_progression_download_audio_job(client):
+    audio = client.post(
+        "/v1/uploads/audio",
+        files={"file": ("song.wav", b"RIFFfake wav data", "audio/wav")},
+    ).json()
+    create = client.post("/v1/jobs", json={"audio": audio, "title": "Chords DL"}).json()
+    job_id = create["job_id"]
+    _wait_for_succeeded(client, job_id)
+
+    response = client.get(f"/v1/artifacts/{job_id}/chord_progression")
+    assert response.status_code == 200
+    assert "text/plain" in response.headers["content-type"]
+    assert f'filename="{job_id}-chord-progression.txt"' in response.headers["content-disposition"]
+    assert response.content.startswith(b"# chord progression")
+
+
 def test_artifact_unknown_kind(client):
     job_id = _submit_midi_job(client)
     _wait_for_succeeded(client, job_id)

@@ -372,9 +372,13 @@ class PipelineRunner:
         # Carry the raw transcription MIDI URI (if any) onto the final
         # output so the artifacts route can serve it without needing a
         # separate handle on TranscriptionResult.
-        if txr_dict is not None and txr_dict.get("transcription_midi_uri"):
-            result = result.model_copy(
-                update={"transcription_midi_uri": txr_dict["transcription_midi_uri"]},
-            )
+        if txr_dict is not None:
+            txr_updates: dict[str, str] = {}
+            if txr_dict.get("transcription_midi_uri"):
+                txr_updates["transcription_midi_uri"] = txr_dict["transcription_midi_uri"]
+            if txr_dict.get("chord_progression_uri"):
+                txr_updates["chord_progression_uri"] = txr_dict["chord_progression_uri"]
+            if txr_updates:
+                result = result.model_copy(update=txr_updates)
         log.info("pipeline finished job_id=%s", job_id)
         return result

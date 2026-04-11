@@ -25,6 +25,7 @@ from backend.services.bass_extraction import BassExtractionStats
 from backend.services.chord_recognition import ChordRecognitionStats
 from backend.services.crepe_melody import CrepeMelodyStats
 from backend.services.duration_refine import DurationRefineStats
+from backend.services.harmony_analysis import HarmonyAnalysisStats
 from backend.services.key_estimation import KeyEstimationStats, MeterEstimationStats
 from backend.services.melody_extraction import MelodyExtractionStats
 from backend.services.onset_refine import OnsetRefineStats
@@ -83,6 +84,7 @@ def _pretty_midi_to_transcription_result(
     melody_stats: MelodyExtractionStats | None = None,
     bass_stats: BassExtractionStats | None = None,
     chord_stats: ChordRecognitionStats | None = None,
+    harmony_stats: HarmonyAnalysisStats | None = None,
     chord_labels: list[RealtimeChordEvent] | None = None,
     stem_stats: StemSeparationStats | None = None,
     per_stem_preprocess_stats: dict[str, PreprocessStats] | None = None,
@@ -217,7 +219,11 @@ def _pretty_midi_to_transcription_result(
         warnings.extend(melody_stats.as_warnings())
     if bass_stats is not None:
         warnings.extend(bass_stats.as_warnings())
-    if chord_stats is not None:
+    if harmony_stats is not None:
+        warnings.extend(harmony_stats.as_warnings())
+        if chord_stats is not None and (chord_stats.skipped or chord_stats.warnings):
+            warnings.extend([f"audio chord guidance: {w}" for w in chord_stats.as_warnings()])
+    elif chord_stats is not None:
         warnings.extend(chord_stats.as_warnings())
     if crepe_melody_stats is not None:
         warnings.extend(crepe_melody_stats.as_warnings())

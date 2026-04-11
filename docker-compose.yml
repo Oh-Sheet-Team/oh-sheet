@@ -1,8 +1,10 @@
 services:
   redis:
     image: redis:7-alpine
+    # Host 6380 avoids clashing with a local Redis on 6379 (e.g. brew services).
+    # In-container services still use redis://redis:6379.
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

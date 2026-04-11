@@ -36,6 +36,8 @@ def test_create_job_from_audio_runs_to_completion(client):
     assert status["result"]["pdf_uri"].startswith("file://")
     assert status["result"]["musicxml_uri"]
     assert status["result"]["humanized_midi_uri"]
+    assert status["result"]["chord_progression_uri"]
+    assert "chord-progression.txt" in status["result"]["chord_progression_uri"]
 
 
 def test_create_job_rejects_no_source(client):

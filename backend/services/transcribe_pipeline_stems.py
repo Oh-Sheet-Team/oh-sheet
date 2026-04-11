@@ -41,6 +41,10 @@ from backend.services.duration_refine import (
     DurationRefineStats,
     refine_durations,
 )
+from backend.services.harmony_analysis import (
+    HarmonyAnalysisStats,
+    analyze_chordal_harmony,
+)
 from backend.services.key_estimation import refine_key_with_chords
 from backend.services.melody_extraction import (
     MelodyExtractionStats,
@@ -474,14 +478,16 @@ def _run_with_stems(
     # available. Chord labeling on the other stem is cleaner because
     # vocal sibilance and drum spectral leakage don't pollute the
     # chroma vectors. Same mix-fallback pattern as beat tracking.
+    audio_chord_labels: list[RealtimeChordEvent] = []
     chord_labels: list[RealtimeChordEvent] = []
     chord_stats: ChordRecognitionStats | None = None
+    harmony_stats: HarmonyAnalysisStats | None = None
     if settings.chord_recognition_enabled:
         chord_src: Path = audio_path
         if settings.demucs_use_other_for_chords and stems.other is not None:
             chord_src = stems.other
         try:
-            chord_labels, chord_stats = recognize_chords(
+            audio_chord_labels, chord_stats = recognize_chords(
                 chord_src,
                 min_score=settings.chord_min_template_score,
                 hpss_margin=settings.chord_hpss_margin,
@@ -495,7 +501,7 @@ def _run_with_stems(
                 log.debug(
                     "chord recognition on other-stem skipped, retrying with mix"
                 )
-                chord_labels, chord_stats = recognize_chords(
+                audio_chord_labels, chord_stats = recognize_chords(
                     audio_path,
                     min_score=settings.chord_min_template_score,
                     hpss_margin=settings.chord_hpss_margin,
@@ -507,11 +513,28 @@ def _run_with_stems(
                 )
         except Exception as exc:  # noqa: BLE001 — chord recog must not sink transcribe
             log.warning("chord recognition raised: %s", exc)
-            chord_labels = []
+            audio_chord_labels = []
             chord_stats = ChordRecognitionStats(skipped=True)
             chord_stats.warnings.append(f"chord recognition failed: {exc}")
 
+        try:
+            chord_labels, harmony_stats = analyze_chordal_harmony(
+                events_by_role,
+                tempo_map=audio_tempo_map,
+                key_label=key_label,
+                guide_chords=audio_chord_labels,
+                hmm_enabled=settings.chord_hmm_enabled,
+                hmm_self_transition=settings.chord_hmm_self_transition,
+                hmm_temperature=settings.chord_hmm_temperature,
+            )
+        except Exception as exc:  # noqa: BLE001 — harmony analysis must not sink transcribe
+            log.warning("harmony analysis raised: %s", exc)
+            chord_labels = list(audio_chord_labels)
+            harmony_stats = HarmonyAnalysisStats(skipped=True)
+            harmony_stats.warnings.append(f"harmony analysis failed: {exc}")
+
     # Cross-validate the KS key estimate against detected chords.
+    key_label_before_validation = key_label
     if (
         settings.key_chord_validation_enabled
         and key_stats is not None
@@ -525,6 +548,27 @@ def _run_with_stems(
             diatonic_threshold=settings.key_chord_diatonic_threshold,
             flip_margin=settings.key_chord_flip_margin,
         )
+
+    if (
+        settings.chord_recognition_enabled
+        and chord_labels
+        and key_label != key_label_before_validation
+    ):
+        try:
+            chord_labels, harmony_stats = analyze_chordal_harmony(
+                events_by_role,
+                tempo_map=audio_tempo_map,
+                key_label=key_label,
+                guide_chords=audio_chord_labels,
+                hmm_enabled=settings.chord_hmm_enabled,
+                hmm_self_transition=settings.chord_hmm_self_transition,
+                hmm_temperature=settings.chord_hmm_temperature,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("harmony re-analysis after key flip raised: %s", exc)
+            if harmony_stats is None:
+                harmony_stats = HarmonyAnalysisStats(skipped=True)
+            harmony_stats.warnings.append(f"harmony re-analysis failed: {exc}")
 
     # Pick a representative pretty_midi for the blob artifact — we
     # prefer the "other" pass because it carries the largest note
@@ -578,6 +622,7 @@ def _run_with_stems(
         melody_stats=melody_stats,
         bass_stats=None,
         chord_stats=chord_stats,
+        harmony_stats=harmony_stats,
         chord_labels=chord_labels,
         stem_stats=stem_stats,
         per_stem_preprocess_stats=per_stem_preprocess_stats,

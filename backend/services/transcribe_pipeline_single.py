@@ -29,6 +29,10 @@ from backend.services.duration_refine import (
     DurationRefineStats,
     refine_durations,
 )
+from backend.services.harmony_analysis import (
+    HarmonyAnalysisStats,
+    analyze_chordal_harmony,
+)
 from backend.services.key_estimation import refine_key_with_chords
 from backend.services.melody_extraction import (
     MelodyExtractionStats,
@@ -94,6 +98,7 @@ def _run_without_stems(
     melody_stats: MelodyExtractionStats | None = None
     bass_stats: BassExtractionStats | None = None
     chord_stats: ChordRecognitionStats | None = None
+    harmony_stats: HarmonyAnalysisStats | None = None
     chord_labels: list[RealtimeChordEvent] = []
 
     if settings.melody_extraction_enabled:
@@ -225,9 +230,10 @@ def _run_without_stems(
     # pipeline — it labels the waveform, and the labels attach to
     # HarmonicAnalysis.chords. Best-effort: any failure yields an empty
     # label list and a "skipped" stats marker.
+    audio_chord_labels: list[RealtimeChordEvent] = []
     if settings.chord_recognition_enabled:
         try:
-            chord_labels, chord_stats = recognize_chords(
+            audio_chord_labels, chord_stats = recognize_chords(
                 audio_path,
                 min_score=settings.chord_min_template_score,
                 hpss_margin=settings.chord_hpss_margin,
@@ -239,15 +245,32 @@ def _run_without_stems(
             )
         except Exception as exc:  # noqa: BLE001 — never let chord recog sink transcribe
             log.warning("chord recognition raised: %s", exc)
-            chord_labels = []
+            audio_chord_labels = []
             chord_stats = ChordRecognitionStats(skipped=True)
             chord_stats.warnings.append(f"chord recognition failed: {exc}")
+
+        try:
+            chord_labels, harmony_stats = analyze_chordal_harmony(
+                events_by_role,
+                tempo_map=audio_tempo_map,
+                key_label=key_label,
+                guide_chords=audio_chord_labels,
+                hmm_enabled=settings.chord_hmm_enabled,
+                hmm_self_transition=settings.chord_hmm_self_transition,
+                hmm_temperature=settings.chord_hmm_temperature,
+            )
+        except Exception as exc:  # noqa: BLE001 — harmony analysis must not sink transcribe
+            log.warning("harmony analysis raised: %s", exc)
+            chord_labels = list(audio_chord_labels)
+            harmony_stats = HarmonyAnalysisStats(skipped=True)
+            harmony_stats.warnings.append(f"harmony analysis failed: {exc}")
 
     # Cross-validate the KS key estimate against detected chords.
     # This helps resolve relative major/minor confusions (Am vs C)
     # by checking whether the chord progression better supports the
     # runner-up key. Best-effort: any failure returns the KS key
     # unchanged.
+    key_label_before_validation = key_label
     if (
         settings.key_chord_validation_enabled
         and key_stats is not None
@@ -261,6 +284,27 @@ def _run_without_stems(
             diatonic_threshold=settings.key_chord_diatonic_threshold,
             flip_margin=settings.key_chord_flip_margin,
         )
+
+    if (
+        settings.chord_recognition_enabled
+        and chord_labels
+        and key_label != key_label_before_validation
+    ):
+        try:
+            chord_labels, harmony_stats = analyze_chordal_harmony(
+                events_by_role,
+                tempo_map=audio_tempo_map,
+                key_label=key_label,
+                guide_chords=audio_chord_labels,
+                hmm_enabled=settings.chord_hmm_enabled,
+                hmm_self_transition=settings.chord_hmm_self_transition,
+                hmm_temperature=settings.chord_hmm_temperature,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("harmony re-analysis after key flip raised: %s", exc)
+            if harmony_stats is None:
+                harmony_stats = HarmonyAnalysisStats(skipped=True)
+            harmony_stats.warnings.append(f"harmony re-analysis failed: {exc}")
 
     # Rebuild the blob MIDI so its ``set_tempo`` meta event matches the
     # waveform-derived tempo. Fall back to the BP-default ``midi_data``
@@ -288,6 +332,7 @@ def _run_without_stems(
         melody_stats=melody_stats,
         bass_stats=bass_stats,
         chord_stats=chord_stats,
+        harmony_stats=harmony_stats,
         chord_labels=chord_labels,
         stem_stats=stem_stats,
         onset_refine_stats=onset_refine_stats_single,

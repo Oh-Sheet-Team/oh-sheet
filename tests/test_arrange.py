@@ -9,6 +9,7 @@ from backend.contracts import (
     InstrumentRole,
     MidiTrack,
     Note,
+    RealtimeChordEvent,
     QualitySignal,
     TempoMapEntry,
     TranscriptionResult,
@@ -16,6 +17,7 @@ from backend.contracts import (
 from backend.services.arrange import (
     QUANT_GRID,
     ArrangeService,
+    _chord_to_score_chord,
     _estimate_best_grid,
 )
 
@@ -77,6 +79,29 @@ def _make_transcription(onset_offsets: list[tuple[float, float]], bpm: float = 1
         ),
         quality=QualitySignal(overall_confidence=0.9),
     )
+
+
+def test_chord_metadata_is_preserved_when_converting_to_score_domain():
+    chord = RealtimeChordEvent(
+        time_sec=0.0,
+        duration_sec=1.0,
+        label="C:maj/E",
+        root=0,
+        confidence=0.9,
+        quality="maj",
+        bass=4,
+        roman_numeral="I6",
+        source="hybrid",
+    )
+
+    score_chord = _chord_to_score_chord(chord, [TempoMapEntry(time_sec=0.0, beat=0.0, bpm=120.0)])
+
+    assert score_chord.label == "C:maj/E"
+    assert score_chord.root == 0
+    assert score_chord.quality == "maj"
+    assert score_chord.bass == 4
+    assert score_chord.roman_numeral == "I6"
+    assert score_chord.source == "hybrid"
 
 
 @pytest.mark.asyncio

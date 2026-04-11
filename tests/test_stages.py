@@ -57,6 +57,7 @@ def _transcription_result() -> dict:
         },
         "quality": {"overall_confidence": 0.8, "warnings": []},
         "transcription_midi_uri": None,
+        "chord_progression_uri": None,
     }
 
 

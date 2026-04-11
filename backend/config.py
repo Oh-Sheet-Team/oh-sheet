@@ -189,10 +189,13 @@ class Settings(BaseSettings):
     bass_max_transition_bins: int = 9            # ≈ 3 semitones / frame
     bass_match_fraction: float = 0.55
 
-    # ---- Chord recognition (Phase 3 post-processing) ----------------------
-    # librosa chroma_cqt + 24 triad templates, beat-synced via the same
-    # beat tracker that drives the tempo map. Labels attach to
-    # ``HarmonicAnalysis.chords``; notes are unaffected. Disable via
+    # ---- Chord / harmony analysis (Phase 3 post-processing) ---------------
+    # Hybrid harmonic analysis:
+    #   * optional audio guide from librosa chroma + template matching
+    #   * symbolic chord scoring over the transcribed note events
+    #   * key-aware HMM smoothing
+    # Final labels attach to ``HarmonicAnalysis.chords``; note events are
+    # unaffected. Disable the whole stage via
     # ``OHSHEET_CHORD_RECOGNITION_ENABLED=false``.
     chord_recognition_enabled: bool = True
     chord_min_template_score: float = 0.55

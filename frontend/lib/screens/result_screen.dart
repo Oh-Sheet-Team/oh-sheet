@@ -95,6 +95,14 @@ class ResultScreen extends StatelessWidget {
 
     final downloads = LayoutBuilder(
       builder: (context, constraints) {
+        final chordBtn = job.hasChordProgression
+            ? OutlinedButton.icon(
+                onPressed: () => _download('chord_progression'),
+                icon: const Icon(Icons.subject, size: 18),
+                label: const Text('Chord progression'),
+              )
+            : null;
+
         if (constraints.maxWidth < 340) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -116,34 +124,47 @@ class ResultScreen extends StatelessWidget {
                 icon: const Icon(Icons.notes, size: 18),
                 label: const Text('MusicXML'),
               ),
+              if (chordBtn != null) ...[
+                const SizedBox(height: 8),
+                chordBtn,
+              ],
             ],
           );
         }
-        return Row(
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: () => _download('pdf'),
-                icon: const Icon(Icons.picture_as_pdf, size: 18),
-                label: const Text('PDF'),
-              ),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => _download('pdf'),
+                    icon: const Icon(Icons.picture_as_pdf, size: 18),
+                    label: const Text('PDF'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => _download('midi'),
+                    icon: const Icon(Icons.music_note, size: 18),
+                    label: const Text('MIDI'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _download('musicxml'),
+                    icon: const Icon(Icons.notes, size: 18),
+                    label: const Text('MusicXML'),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: () => _download('midi'),
-                icon: const Icon(Icons.music_note, size: 18),
-                label: const Text('MIDI'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () => _download('musicxml'),
-                icon: const Icon(Icons.notes, size: 18),
-                label: const Text('MusicXML'),
-              ),
-            ),
+            if (chordBtn != null) ...[
+              const SizedBox(height: 8),
+              SizedBox(width: double.infinity, child: chordBtn),
+            ],
           ],
         );
       },

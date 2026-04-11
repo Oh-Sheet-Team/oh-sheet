@@ -18,7 +18,7 @@ from backend.storage.local import LocalBlobStore
 
 router = APIRouter()
 
-ArtifactKind = Literal["pdf", "musicxml", "midi", "transcription_midi"]
+ArtifactKind = Literal["pdf", "musicxml", "midi", "transcription_midi", "chord_progression"]
 
 # kind → (uri attribute on EngravedOutput, media type, downloaded filename suffix)
 _KIND_INFO: dict[str, tuple[str, str, str]] = {
@@ -26,6 +26,7 @@ _KIND_INFO: dict[str, tuple[str, str, str]] = {
     "musicxml":           ("musicxml_uri",           "application/vnd.recordare.musicxml+xml", "score.musicxml"),
     "midi":               ("humanized_midi_uri",     "audio/midi",                            "humanized.mid"),
     "transcription_midi": ("transcription_midi_uri", "audio/midi",                            "transcription.mid"),
+    "chord_progression":  ("chord_progression_uri",  "text/plain; charset=utf-8",             "chord-progression.txt"),
 }
 
 

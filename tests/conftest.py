@@ -54,7 +54,16 @@ def skip_real_transcription(monkeypatch):
             uri = self.blob_store.put_bytes(
                 f"jobs/{job_id}/transcription/basic-pitch.mid", fake_midi,
             )
-            stub = stub.model_copy(update={"transcription_midi_uri": uri})
+            chord_uri = self.blob_store.put_bytes(
+                f"jobs/{job_id}/transcription/chord-progression.txt",
+                b"# chord progression (test stub)\n",
+            )
+            stub = stub.model_copy(
+                update={
+                    "transcription_midi_uri": uri,
+                    "chord_progression_uri": chord_uri,
+                },
+            )
         return stub
 
     monkeypatch.setattr(transcribe_module.TranscribeService, "run", _fake_run)

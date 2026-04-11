@@ -85,6 +85,14 @@ class JobSummary {
   bool get isTerminal => status == 'succeeded' || status == 'failed' || status == 'cancelled';
   bool get succeeded => status == 'succeeded';
 
+  /// Present when transcribe persisted ``chord-progression.txt`` (audio paths).
+  bool get hasChordProgression {
+    final r = result;
+    if (r == null) return false;
+    final uri = r['chord_progression_uri'];
+    return uri is String && uri.isNotEmpty;
+  }
+
   factory JobSummary.fromJson(Map<String, dynamic> json) => JobSummary(
         jobId: json['job_id'] as String,
         status: json['status'] as String,
