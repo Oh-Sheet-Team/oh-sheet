@@ -223,12 +223,22 @@ def _render_musicxml_bytes(
         for a in perf.expression.articulations:
             articulations_at[a.score_note_id] = a.type
 
+    # Render as a real piano grand staff: two ``PartStaff`` objects bound
+    # by a braced ``StaffGroup``. music21 emits this as a single
+    # ``<part>`` with ``<staves>2</staves>`` and staff-tagged notes —
+    # exactly what OSMD / LilyPond / MuseScore expect for piano. Previous
+    # behavior emitted two separate ``<part>``s ("Right Hand", "Left
+    # Hand") which renderers drew as two stacked instruments without a
+    # connecting brace. Both PartStaffs share ``partName="Piano"`` so the
+    # merged ``<score-part>`` gets the correct "Piano" label.
+    piano_parts: list = []
     for hand_name, notes, clef in (
         ("Right Hand", score.right_hand, music21.clef.TrebleClef()),
         ("Left Hand", score.left_hand, music21.clef.BassClef()),
     ):
-        part = music21.stream.Part()
-        part.partName = hand_name
+        part = music21.stream.PartStaff()
+        part.partName = "Piano"
+        part.partAbbreviation = "Pno."
         part.append(ts)
         part.append(ks)
         if hand_name == "Right Hand":
@@ -279,7 +289,24 @@ def _render_musicxml_bytes(
         # which produces MusicXML that OSMD chokes on.
         part.quantize(quarterLengthDivisors=(4, 3), inPlace=True)
         part.makeNotation(inPlace=True)
-        s.append(part)
+        s.insert(0, part)
+        piano_parts.append(part)
+
+    # Bind the two PartStaffs into a braced grand staff. music21 detects
+    # the StaffGroup and collapses them into one ``<part>`` with
+    # ``<staves>2</staves>`` in the MusicXML output, with each note
+    # carrying a ``<staff>`` tag so renderers place it on the correct
+    # stave.
+    s.insert(
+        0,
+        music21.layout.StaffGroup(
+            piano_parts,
+            name="Piano",
+            abbreviation="Pno.",
+            symbol="brace",
+            barTogether=True,
+        ),
+    )
 
     with tempfile.NamedTemporaryFile(suffix=".musicxml", delete=False) as tmp:
         tmp_path = Path(tmp.name)

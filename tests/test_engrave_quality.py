@@ -330,6 +330,74 @@ def test_l2_humanized_fermata_rendered(engraved_artifacts):
     assert fermatas, "no <fermata> element in rendered MusicXML"
 
 
+# ---------------------------------------------------------------------------
+# L2 — Grand-staff structure (plan phase 2.3 / PR-8)
+# ---------------------------------------------------------------------------
+
+
+def _count_staff(musicxml: bytes, staff: int) -> int:
+    """Count pitched ``<note>`` elements tagged with ``<staff>{staff}</staff>``."""
+    from lxml import etree
+
+    count = 0
+    for note in etree.fromstring(musicxml).iter("note"):
+        if note.find("rest") is not None:
+            continue
+        staff_elem = note.find("staff")
+        if staff_elem is not None and int(staff_elem.text) == staff:
+            count += 1
+    return count
+
+
+def test_l2_grand_staff_single_part(engraved_artifacts):
+    """Piano scores render as one ``<part>`` with ``<staves>2</staves>``.
+
+    Plan phase 2.3 / PR-8 — before this change, engrave emitted two
+    separate parts ("Right Hand", "Left Hand") which renderers drew as
+    two stacked instruments without a brace. The fix is ``PartStaff`` +
+    ``StaffGroup(symbol='brace')``, which music21 collapses into a single
+    multi-staff part at export time. The part-list label is "Piano",
+    not the per-hand labels used for in-engine bookkeeping.
+    """
+    from lxml import etree
+
+    # two_hand_chordal is the canonical grand-staff fixture: triads in
+    # RH, octaves in LH — both must end up on the same part.
+    musicxml, _ = engraved_artifacts["two_hand_chordal"]
+    root = etree.fromstring(musicxml)
+
+    parts = root.findall("part")
+    assert len(parts) == 1, f"expected single merged part, got {len(parts)}"
+
+    score_parts = root.findall("part-list/score-part")
+    assert len(score_parts) == 1
+    part_name = score_parts[0].findtext("part-name")
+    assert part_name == "Piano", f"expected part-name 'Piano', got {part_name!r}"
+
+    staves = [int(e.text) for e in root.iter("staves")]
+    assert staves and max(staves) == 2, (
+        f"expected <staves>2</staves>, got {staves}"
+    )
+
+    # Staff 1 gets the 12 RH notes, staff 2 gets the 8 LH notes.
+    assert _count_staff(musicxml, 1) == 12
+    assert _count_staff(musicxml, 2) == 8
+
+
+def test_l2_rh_only_fixture_still_single_part(engraved_artifacts):
+    """An empty-LH fixture still emits a grand staff — just with an empty
+    bass stave. This catches the regression where dropping LH content
+    would also drop the ``<staves>2</staves>`` declaration.
+    """
+    from lxml import etree
+
+    musicxml, _ = engraved_artifacts["empty_left_hand"]
+    root = etree.fromstring(musicxml)
+    assert len(root.findall("part")) == 1
+    staves = [int(e.text) for e in root.iter("staves")]
+    assert staves and max(staves) == 2
+
+
 def test_l2_engraved_flags_reflect_rendered_content(engraved_artifacts):
     """``EngravedScoreData.includes_dynamics / includes_pedal_marks`` must
     now report True when the humanized input populates them.
