@@ -21,8 +21,14 @@ Scoring policy (see ``score_candidate``):
     +10  artist name appears in the found title or the channel name
     -20  title contains "karaoke" / "tutorial" / "how to play" / "lesson"
 
-Default threshold: score >= 70 triggers a URL swap. The threshold is
-passed as a parameter so callers (or config) can tune strictness.
+Default threshold: score >= 60 triggers a URL swap. Dry-run testing
+against real YouTube (see scripts/dryrun_cover_search.py) showed the
+original 70 was too strict — legitimate pop covers from non-allowlist
+channels cap at exactly 60 (+30 piano cover + +20 title + +10 artist),
+so 70 silently rejected them. At 60, junk content (karaoke/tutorial)
+still can't clear because the -20 penalty brings them to 40 or below.
+The threshold is passed as a parameter so callers (or config) can
+tune strictness without editing this module.
 
 Silent failure contract:
     ``find_piano_cover`` returns ``None`` on any failure (network error,
@@ -200,7 +206,7 @@ def find_piano_cover(
     title: str,
     artist: str | None,
     *,
-    min_score: int = 70,
+    min_score: int = 60,
     top_k: int = 5,
 ) -> CoverSearchResult | None:
     """Search YouTube for a piano cover of ``title`` (optionally by ``artist``).
