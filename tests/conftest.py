@@ -6,7 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.workers.arrange  # noqa: F401
+import backend.workers.assemble  # noqa: F401
 import backend.workers.condense  # noqa: F401
+import backend.workers.decompose  # noqa: F401
 import backend.workers.engrave  # noqa: F401
 import backend.workers.humanize  # noqa: F401
 
