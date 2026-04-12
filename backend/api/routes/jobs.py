@@ -18,6 +18,7 @@ from backend.contracts import (
     PipelineVariant,
     RemoteAudioFile,
     RemoteMidiFile,
+    ScorePipelineMode,
 )
 from backend.jobs.events import JobEvent
 from backend.jobs.manager import JobManager, JobRecord
@@ -55,6 +56,7 @@ class JobCreateRequest(BaseModel):
 
     skip_humanizer: bool = False
     difficulty: Difficulty = "intermediate"
+    score_pipeline: ScorePipelineMode | None = None
 
 
 class JobSummary(BaseModel):
@@ -151,7 +153,7 @@ async def create_job(
     config = PipelineConfig(
         variant=variant,
         skip_humanizer=body.skip_humanizer,
-        score_pipeline=settings.score_pipeline,
+        score_pipeline=body.score_pipeline or settings.score_pipeline,
     )
     record = await manager.submit(bundle, config)
     return _record_to_summary(record)

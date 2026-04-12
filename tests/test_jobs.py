@@ -302,3 +302,84 @@ def test_midi_job_decompose_assemble_pipeline(monkeypatch, client):
     assert "decompose" in completed
     assert "assemble" in completed
     assert "arrange" not in completed
+
+
+def test_rat_dance_midi_decompose_assemble_e2e(monkeypatch, client):
+    """End-to-end: real Rat Dance MIDI through decompose_assemble pipeline.
+
+    Verifies the full pipeline produces PDF, MusicXML, and MIDI artifacts
+    with real note data (not stubs). Mirrors the Playwright E2E test in
+    e2e/tests/pipeline-e2e.spec.ts but runs in-process via Celery eager mode.
+    """
+    from pathlib import Path
+
+    monkeypatch.setattr(settings, "score_pipeline", "decompose_assemble")
+
+    midi_path = Path("test_files/Rat Dance.mid")
+    if not midi_path.is_file():
+        pytest.skip("test_files/Rat Dance.mid not found")
+
+    midi_bytes = midi_path.read_bytes()
+
+    # Upload real MIDI
+    upload = client.post(
+        "/v1/uploads/midi",
+        files={"file": ("Rat Dance.mid", midi_bytes, "audio/midi")},
+    )
+    assert upload.status_code == 200, upload.text
+    midi = upload.json()
+
+    # Create job
+    create = client.post(
+        "/v1/jobs",
+        json={"midi": midi, "title": "Rat Dance", "artist": "E2E Test"},
+    )
+    assert create.status_code == 202, create.text
+    job = create.json()
+    assert job["variant"] == "midi_upload"
+    job_id = job["job_id"]
+
+    # Poll for completion (real MIDI parsing takes slightly longer than stubs)
+    deadline = time.time() + 15
+    status = None
+    while time.time() < deadline:
+        status = client.get(f"/v1/jobs/{job_id}").json()
+        if status["status"] in ("succeeded", "failed"):
+            break
+        time.sleep(0.1)
+
+    assert status is not None
+    assert status["status"] == "succeeded", status
+    result = status["result"]
+
+    # Verify artifacts exist
+    assert result["pdf_uri"].startswith("file://")
+    assert result["musicxml_uri"]
+    assert result["humanized_midi_uri"]
+
+    # Verify artifacts are downloadable and non-empty
+    pdf = client.get(f"/v1/artifacts/{job_id}/pdf")
+    assert pdf.status_code == 200
+    assert len(pdf.content) > 0
+
+    midi_out = client.get(f"/v1/artifacts/{job_id}/midi")
+    assert midi_out.status_code == 200
+    assert midi_out.content[:4] == b"MThd"  # valid MIDI header
+
+    # Verify pipeline stages via WebSocket
+    with client.websocket_connect(f"/v1/jobs/{job_id}/ws") as ws:
+        events = []
+        while True:
+            event = ws.receive_json()
+            events.append(event)
+            if event["type"] in ("job_succeeded", "job_failed"):
+                break
+
+    completed = [e["stage"] for e in events if e["type"] == "stage_completed"]
+    assert "ingest" in completed
+    assert "decompose" in completed
+    assert "assemble" in completed
+    assert "humanize" in completed
+    assert "engrave" in completed
+    assert "arrange" not in completed
+    assert "transcribe" not in completed

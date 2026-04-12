@@ -74,6 +74,7 @@ class OhSheetApi {
     String? artist,
     bool skipHumanizer = false,
     bool? preferCleanSource,
+    String? scorePipeline,
   }) async {
     final body = <String, dynamic>{
       if (audio != null) 'audio': audio.toJson(),
@@ -82,6 +83,7 @@ class OhSheetApi {
       if (artist != null && artist.isNotEmpty) 'artist': artist,
       'skip_humanizer': skipHumanizer,
       if (preferCleanSource != null) 'prefer_clean_source': preferCleanSource,
+      if (scorePipeline != null) 'score_pipeline': scorePipeline,
     };
     final response = await _client.post(
       _u('/v1/jobs'),

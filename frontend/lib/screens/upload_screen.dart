@@ -41,6 +41,10 @@ class _UploadScreenState extends State<UploadScreen> {
   // pasted; they can flip it on once they see the option.
   bool _preferCleanSource = false;
 
+  // Pipeline mode: which arrangement strategy to use.
+  // null = server default (arrange).
+  String? _scorePipeline;
+
   static final _youtubeRegex = RegExp(
     r'^https?://(www\.|music\.|m\.)?youtu(\.be/|be\.com/watch\?v=)([\w-]{11})',
   );
@@ -103,6 +107,7 @@ class _UploadScreenState extends State<UploadScreen> {
             artist: _artistController.text.trim().isEmpty
                 ? null
                 : _artistController.text.trim(),
+            scorePipeline: _scorePipeline,
           );
           break;
         case _SourceMode.midi:
@@ -121,6 +126,7 @@ class _UploadScreenState extends State<UploadScreen> {
             artist: _artistController.text.trim().isEmpty
                 ? null
                 : _artistController.text.trim(),
+            scorePipeline: _scorePipeline,
           );
           break;
         case _SourceMode.title:
@@ -131,6 +137,7 @@ class _UploadScreenState extends State<UploadScreen> {
             artist: _artistController.text.trim().isEmpty
                 ? null
                 : _artistController.text.trim(),
+            scorePipeline: _scorePipeline,
           );
           break;
         case _SourceMode.youtube:
@@ -143,6 +150,7 @@ class _UploadScreenState extends State<UploadScreen> {
                 ? null
                 : _artistController.text.trim(),
             preferCleanSource: _preferCleanSource,
+            scorePipeline: _scorePipeline,
           );
           break;
       }
@@ -372,6 +380,29 @@ class _UploadScreenState extends State<UploadScreen> {
                           ),
                         ),
                       ],
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String?>(
+                        value: _scorePipeline,
+                        decoration: const InputDecoration(
+                          labelText: 'Arrangement pipeline',
+                          helperText: 'How notes get arranged into sheet music',
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: null,
+                            child: Text('Arrange (default)'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'condense_transform',
+                            child: Text('Condense + Transform'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'decompose_assemble',
+                            child: Text('Decompose + Assemble'),
+                          ),
+                        ],
+                        onChanged: (v) => setState(() => _scorePipeline = v),
+                      ),
                       const SizedBox(height: 22),
                       OhSheetStickerCTA(
                         key: const ValueKey('ohsheet_primary_submit'),
