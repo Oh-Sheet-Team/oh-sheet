@@ -30,7 +30,9 @@ from backend.contracts import (
     WorkerResponse,
 )
 from backend.services.arrange import ArrangeService
+from backend.services.assemble import AssembleService
 from backend.services.condense import CondenseService
+from backend.services.decompose import DecomposeService
 from backend.services.engrave import EngraveService
 from backend.services.humanize import HumanizeService
 from backend.services.ingest import IngestService
@@ -158,6 +160,44 @@ async def stage_arrange(
         input_model=TranscriptionResult,
         coro=coro,
         output_key="score.json",
+    )
+
+
+@router.post("/stages/decompose", response_model=WorkerResponse)
+async def stage_decompose(
+    cmd: OrchestratorCommand,
+    blob: Annotated[LocalBlobStore, Depends(get_blob_store)],
+) -> WorkerResponse:
+    decompose = DecomposeService()
+
+    async def coro(payload: TranscriptionResult) -> TranscriptionResult:
+        return decompose.run(payload)
+
+    return await _run_stage(
+        cmd,
+        blob,
+        input_model=TranscriptionResult,
+        coro=coro,
+        output_key="decompose.json",
+    )
+
+
+@router.post("/stages/assemble", response_model=WorkerResponse)
+async def stage_assemble(
+    cmd: OrchestratorCommand,
+    blob: Annotated[LocalBlobStore, Depends(get_blob_store)],
+) -> WorkerResponse:
+    assemble = AssembleService()
+
+    async def coro(payload: TranscriptionResult) -> PianoScore:
+        return assemble.run(payload, difficulty="beginner")
+
+    return await _run_stage(
+        cmd,
+        blob,
+        input_model=TranscriptionResult,
+        coro=coro,
+        output_key="assemble.json",
     )
 
 
