@@ -45,6 +45,8 @@ STEP_TO_TASK: dict[str, str] = {
     "transform": "transform.run",
     "humanize": "humanize.run",
     "engrave": "engrave.run",
+    "decompose": "decompose.run",
+    "assemble": "assemble.run",
 }
 
 

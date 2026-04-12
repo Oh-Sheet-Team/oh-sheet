@@ -498,6 +498,10 @@ class Settings(BaseSettings):
             raise ValueError(f"must be positive, got {v}")
         return v
 
+    # Difficulty level for the assembler stage. Only "beginner" is implemented.
+    # Env: ``OHSHEET_ASSEMBLE_DIFFICULTY``.
+    assemble_difficulty: str = "beginner"
+
     # Score path after transcription (or MIDI-derived TranscriptionResult).
     # Env: ``OHSHEET_SCORE_PIPELINE`` — ``arrange`` (default) or ``condense_transform``.
     score_pipeline: ScorePipelineMode = "arrange"

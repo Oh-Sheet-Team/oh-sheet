@@ -23,6 +23,8 @@ celery_app.conf.update(
         "transform.run": {"queue": "arrange"},
         "humanize.run": {"queue": "humanize"},
         "engrave.run": {"queue": "engrave"},
+        "decompose.run": {"queue": "arrange"},
+        "assemble.run": {"queue": "arrange"},
     },
 )
 
