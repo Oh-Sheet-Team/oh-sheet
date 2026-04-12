@@ -525,8 +525,28 @@ class Settings(BaseSettings):
         return v
 
     # Score path after transcription (or MIDI-derived TranscriptionResult).
-    # Env: ``OHSHEET_SCORE_PIPELINE`` — ``arrange`` (default) or ``condense_transform``.
-    score_pipeline: ScorePipelineMode = "arrange"
+    # Env: ``OHSHEET_SCORE_PIPELINE`` — ``arrange`` or ``condense_transform`` (default).
+    # condense_transform splits arrangement into two stages: condense
+    # (flatten all tracks into one piano stream) then transform (apply
+    # difficulty shaping). Produces a denser, more complete MIDI than
+    # the single-pass arrange mode.
+    score_pipeline: ScorePipelineMode = "condense_transform"
+
+    # ── TuneChat integration ──────────────────────────────────────────
+    # When enabled, Oh Sheet sends audio to TuneChat's transcription
+    # API in parallel with its own pipeline. TuneChat returns a
+    # higher-quality 30-second preview (sheet music + MIDI). Oh Sheet
+    # shows its own result immediately, then upgrades to TuneChat's
+    # result when it arrives.
+    #
+    # Env: OHSHEET_TUNECHAT_ENABLED (default: false — opt-in)
+    # Env: OHSHEET_TUNECHAT_URL (the base URL of a running TuneChat)
+    # Env: OHSHEET_TUNECHAT_API_KEY (Bearer token for /api/v1/transcribe)
+    # Env: OHSHEET_TUNECHAT_TIMEOUT_SEC (max wait before giving up)
+    tunechat_enabled: bool = False
+    tunechat_url: str = "http://localhost:3000"
+    tunechat_api_key: str = ""
+    tunechat_timeout_sec: int = 300
 
     # ---- Arrange backend (rules vs HF MIDI path) ---------------------------
     # ``rules`` — existing hand assignment + quantization in arrange.
