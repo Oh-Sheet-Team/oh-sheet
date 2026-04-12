@@ -1,111 +1,66 @@
-# **PRD: Assembler Microservice (svc-assembler)**
+# PRD: Assembler (Pipeline Stage)
 
-## **1\. Meta Information**
+## 1. Meta Information
 
-* **Service Name:** svc-assembler  
-* **Status:** READY FOR DEVELOPMENT  
-* **Tech Stack:** Python 3.11+, FastAPI (for health/metrics), Celery \+ Redis (Task Queue), music21, Boto3 (S3).  
-* **Pipeline Stage:** Stage 3 (Piano Arrangement)
+* **Stage Name:** assemble
+* **Status:** READY FOR DEVELOPMENT
+* **Tech Stack:** Python 3.10+, Celery + Redis, music21
+* **Pipeline Stage:** Runs after decompose
+* **Pipeline Mode:** Active when `score_pipeline = "decompose_assemble"`
 
-## **2\. Overview & Objective**
+## 2. Overview & Objective
 
-The Assembler service acts as a strict mathematical filter and arranger. It ingests the separated melody and accompaniment MIDI tracks produced by the Decomposer, stacks them onto a two-staff piano arrangement, and rigorously prunes away notes that violate physical playability constraints for a human pianist. To ensure a highly predictable and testable MVP, this service is hardcoded to output an **"Intermediate"** difficulty level using rigid rule-based heuristics.
+The assembler takes the decomposer's two-track output (melody + accompaniment) and produces a `PianoScore` using strict difficulty-specific rules. It accepts a `difficulty` parameter via payload envelope; only `"beginner"` is implemented for MVP.
 
-## **3\. User Personas**
+This stage is a monolith worker (`backend/workers/assemble.py`) dispatched by `PipelineRunner` — not a separate microservice.
 
-* **Beginner/Intermediate Ben (The Target User):** Wants to play pop songs but cannot physically stretch his hands to play dense, 10-note DAW chords. He relies on the Assembler to brutally (but musically) prune out unnecessary inner voices so the sheet music is readable and structurally sound.
+## 3. Pipeline Integration
 
-## **4\. Exact Data Ingestion Contract (Developer Handoff)**
+The assembler is the second half of the `decompose_assemble` pipeline mode. It receives the decomposer's re-separated `TranscriptionResult` and outputs a `PianoScore` that feeds into humanize → engrave (same as `arrange` output).
 
-Because this service is being built in parallel with the Decomposer, there must be zero ambiguity regarding file locations and naming conventions. The Assembler worker must strictly follow this ingestion sequence:
+## 4. Data Contracts
 
-**Step 1: The Celery Payload**
+* **Consumes:** Envelope `{"transcription": TranscriptionResult, "difficulty": str}`
+* **Produces:** `PianoScore` (JSON) — `right_hand` and `left_hand` arrays of `ScoreNote` with unique IDs
 
-The Orchestrator places a task in the Redis queue. The Assembler's Celery worker receives a payload containing the job\_id and the payload\_uri.
+## 5. Difficulty Parameter
 
-* *Example Payload:*  
-  JSON  
-  {  
-    "job\_id": "job\_99887766",  
-    "payload\_uri": "s3://oh-sheet-pipeline/jobs/job\_99887766/transcription\_result.json"  
-  }
+The assembler accepts `difficulty` in the payload envelope. The runner reads `settings.assemble_difficulty` (env: `OHSHEET_ASSEMBLE_DIFFICULTY`, default: `"beginner"`).
 
-**Step 2: Fetching the Contract (The JSON Manifest)**
+Only `"beginner"` is implemented. Other values raise `NotImplementedError`.
 
-Use boto3 to fetch the TranscriptionResult JSON from the payload\_uri. This JSON acts as the manifest for the raw MIDI files.
+## 6. Beginner Rules
 
-* *Expected S3 Path:* s3://{BUCKET\_NAME}/jobs/{job\_id}/transcription\_result.json
+### 6.1 8th-Note Quantization
 
-**Step 3: Resolving the Claim-Checks (The File Paths)**
+Snap every `onset_beat` and `duration_beat` to the nearest 0.5-beat grid. Minimum duration is 0.5 beats. This eliminates fast runs and syncopation.
 
-Parse the JSON's midi\_tracks array. The Decomposer is contracted to output exactly two nodes here with strict instrument string values: "melody" and "other" (accompaniment). Extract the S3 URIs:
+### 6.2 Right Hand: Melody Only
 
-JSON
+* Map all melody track notes to RH Voice 1
+* **Monophony:** max 1 note per quantized beat (highest pitch wins at each onset)
+* **No accompaniment filler:** accompaniment notes are never added to RH
+* **Range:** C4–C6 (MIDI 60–84). Notes outside are octave-shifted inward.
 
-"midi\_tracks": \[  
-  {  
-    "instrument": "melody",  
-    "source\_stem": "s3://oh-sheet-pipeline/jobs/job\_99887766/stems/melody.mid"  
-  },  
-  {  
-    "instrument": "other",  
-    "source\_stem": "s3://oh-sheet-pipeline/jobs/job\_99887766/stems/accompaniment.mid"  
-  }  
-\]
+### 6.3 Left Hand: Bass Only
 
-**Step 4: Container-Safe Local Hydration**
+* **Filter:** discard all accompaniment notes at or above middle C (MIDI ≥ 60)
+* Map the lowest remaining note at each quantized beat to LH Voice 1
+* **Monophony:** max 1 note per quantized beat (lowest pitch wins at each onset)
+* **Range:** C2–B3 (MIDI 36–59). Notes outside are octave-shifted inward.
 
-To avoid file collisions during concurrent Celery processing, **do not** download the files to a generic /tmp/melody.mid. Use boto3 to download the objects to local ephemeral storage using the job\_id as a prefix:
+### 6.4 Velocity
 
-* **Local Melody Path:** /tmp/{job\_id}\_melody.mid  
-* **Local Accompaniment Path:** /tmp/{job\_id}\_accompaniment.mid
+Clamp all velocities to 1–127.
 
-**Step 5: Initialization & Cleanup**
+## 7. Celery Task
 
-Pass those two local file paths directly into music21.converter.parse() to begin filtering. **CRITICAL:** Once the job completes (success or failure), explicitly delete these /tmp files to prevent the Railway container from running out of disk space.
+* **Task name:** `assemble.run`
+* **Queue:** `arrange`
+* **Worker file:** `backend/workers/assemble.py`
+* **Service file:** `backend/services/assemble.py`
+* **Payload:** `(job_id: str, payload_uri: str)` — standard claim-check pattern via `BlobStore`
 
-## **5\. Functional Requirements (The Rule Engine)**
+## 8. Future: Key Transposition (Not in MVP)
 
-The Assembler is a pure, predictable function hardcoded to the "Intermediate" difficulty profile. The developer must build this exact pipeline:
-
-**1\. Key Signature Handling**
-
-* **Baseline MVP:** Read the key signature from the ingested MIDI and keep it exactly as is (Pass-Through). Do not attempt to shift pitches.  
-* **Stretch Goal (Transposition):** Use music21 to analyze the key. If the original key has more than 3 sharps or flats (e.g., E Major, Ab Major), automatically transpose the entire score to the nearest simple key (C Major, F Major, or G Major). *Note to Dev: If implemented, you must ensure music21.chord.simplifyEnharmonics() is run afterward to prevent unreadable enharmonic spelling (like E\#\#).*
-
-**2\. Rigid 16th-Note Quantization**
-
-* Snap every single onset\_beat and duration\_beat to the nearest 0.25 beat grid.
-
-**3\. Right Hand (RH) Logic: The Melody \+ 1**
-
-* **Primary (Immunity):** Map 100% of the notes from melody.mid to RH Voice 1\. These cannot be deleted.  
-* **Secondary (Filler):** Look at notes in accompaniment.mid above Middle C (MIDI 60). Allow a **maximum of 1 concurrent note** to be added below the melody line, provided the distance between that note and the melody note is $\\leq$ 12 semitones. Discard all other RH filler notes.
-
-**4\. Left Hand (LH) Logic: The Bass \+ 1**
-
-* **Primary (Foundation):** Map the lowest concurrent notes from accompaniment.mid to LH Voice 1\. These cannot be deleted.  
-* **Secondary (Filler):** Look at notes in accompaniment.mid below Middle C (MIDI 60). Allow a **maximum of 1 concurrent note** to be added above the bass note, provided the distance between the bass note and the inner note is $\\leq$ 12 semitones. Discard all other LH filler notes.
-
-## **6\. Data Contracts (v3.0.0)**
-
-* **Consumes:** TranscriptionResult (JSON) \+ Raw .mid files via S3.  
-* **Produces:** PianoScore (JSON). Must map the quantized notes to the PianoScore JSON schema, assigning unique IDs (rh-0001, lh-0042), and upload the result to S3.  
-  JSON  
-  "right\_hand": \[  
-    {  
-      "id": "rh-0001",  
-      "pitch": 72,  
-      "onset\_beat": 0.0,  
-      "duration\_beat": 1.0,  
-      "velocity": 80,  
-      "voice": 1  
-    }  
-  \]
-
-## **7\. Scale, Load, & Deployment**
-
-* **Local Dev:** docker-compose utilizing Redis (for Celery) and MinIO (for local S3 emulation).  
-* **Production Deployment:** Railway.app. Deploy as an independent Railway service worker attached to a shared managed Redis instance.  
-* **Autoscaling:** Triggered on CPU utilization \> 70%.  
-* **Memory Profile:** Allocate 1GB RAM minimum per container. music21 generates massive object trees in memory when parsing dense MIDI files.
+The original PRD specified auto-transposing to C/F/G Major when >1 sharp/flat, plus `music21.chord.simplifyEnharmonics()`. This is deferred past MVP — the infrastructure for it exists in music21 but adds complexity to the initial implementation. The `difficulty` parameter interface supports adding this in a future difficulty level or as a separate config knob.

@@ -1,62 +1,58 @@
-Here are the revised, finalized Product Requirements Documents (PRDs) for both the Decomposer and Assembler microservices.
+# PRD: Decomposer (Pipeline Stage)
 
-These updated versions incorporate the new research, specifically pivoting the infrastructure to **Celery \+ Redis** for faster MVP delivery on Railway, and integrating the highly efficient **Musicpy \+ Mido** stack for algorithmic separation.
+## 1. Meta Information
 
-# ---
+* **Stage Name:** decompose
+* **Status:** READY FOR DEVELOPMENT
+* **Tech Stack:** Python 3.10+, Celery + Redis, mido (parsing)
+* **Pipeline Stage:** Runs after transcribe (audio variants) or after ingest (midi_upload)
+* **Pipeline Mode:** Active when `score_pipeline = "decompose_assemble"`
 
-**📄 PRD 1: Decomposer Microservice (svc-decomposer)**
+## 2. Overview & Objective
 
-## **1\. Meta Information**
+The decomposer re-separates transcription tracks into a monophonic melody line and an accompaniment track. It merges all notes from all input tracks (ignoring existing instrument roles), then applies the Skyline Algorithm to extract the highest-pitched note at each time interval as melody. Everything else becomes accompaniment.
 
-* **Service Name:** svc-decomposer  
-* **Status:** READY FOR DEVELOPMENT  
-* **Tech Stack:** Python 3.11+, FastAPI, Celery \+ Redis (Task Queue), mido (Parsing), musicpy (Splitting Logic), Boto3 (S3).  
-* **Pipeline Stage:** Stage 2 (Transcribe & Isolate \- MIDI Only)
+This stage is a monolith worker (`backend/workers/decompose.py`) dispatched by `PipelineRunner` — not a separate microservice.
 
-## **2\. Overview & Objective**
+## 3. Pipeline Integration
 
-The Decomposer service ingests multi-track or single-track MIDI files and intelligently separates the primary melody from the accompaniment. Based on current research, the service will completely bypass heavy ML models and manual heuristic scoring in favor of musicpy's built-in logical separation algorithms, paired with mido for rock-solid file handling.
+The decomposer activates via `ScorePipelineMode = "decompose_assemble"`, which replaces `arrange` with `decompose` → `assemble` in the execution plan:
 
-## **3\. User Personas**
+| Variant | Execution Plan |
+|---|---|
+| `midi_upload` | ingest → decompose → assemble → humanize → engrave |
+| `audio_upload` | ingest → transcribe → decompose → assemble → humanize → engrave |
+| `full` | ingest → transcribe → decompose → assemble → humanize → engrave |
+| `sheet_only` | ingest → transcribe → decompose → assemble → engrave |
 
-* **Producer Penny (Content Creator):** Uploads dense DAW MIDI exports. She needs the system to accurately identify her lead synth line (Melody) and separate it from her chord pads (Accompaniment) so the resulting sheet music is readable and logically split.
+## 4. Data Contracts
 
-## **4\. Expected System Flow (Celery \+ S3)**
+* **Consumes:** `TranscriptionResult` — notes in seconds domain with instrument roles, analysis, quality signal
+* **Produces:** `TranscriptionResult` — same schema, but with exactly two tracks:
+  - `instrument: InstrumentRole.MELODY` — isolated monophonic lead line
+  - `instrument: InstrumentRole.OTHER` — accompaniment (chords + bass grouped)
 
-1. **Trigger:** The API Gateway/Orchestrator pushes a job ID and payload\_uri to the Redis task queue.  
-2. **Hydration:** The Celery worker picks up the task, downloads the InputBundle.json from S3, and fetches the raw .mid file to the local /tmp directory.  
-3. **Processing:** The worker uses mido to parse the file, then passes the structure to musicpy to extract the melody and harmony.  
-4. **Export:** It uses mido to write melody\_isolated.mid and accompaniment.mid back to /tmp and uploads them to S3.  
-5. **Completion:** It generates the TranscriptionResult JSON (v3.0.0), uploads it, and fires a webhook/status update back to the Orchestrator.
+Notes stay inline in `midi_tracks[].notes` arrays (no separate MIDI file export).
 
-## **5\. The Split Heuristics Plan (Implementation Steps)**
+## 5. Algorithm
 
-The engineer should implement the following breakdown for the separation logic:
+1. **Merge:** Collect all notes from all input tracks, ignoring existing `instrument` roles
+2. **Sort:** Order by onset time, then descending pitch
+3. **Skyline split:** Group notes by quantized onset (16th-note resolution). Within each group, the highest-pitched note becomes melody; all others become accompaniment.
+4. **Emit:** Two-track `TranscriptionResult` with analysis and quality passed through unchanged
 
-* **Step 1: Low-Level Parsing (mido)**  
-  * Load the raw MIDI file using mido.MidiFile. This ensures that all MIDI ticks, tempo changes, and structural metadata are accurately preserved before any logical manipulation begins.  
-* **Step 2: The Logic Split (musicpy)**  
-  * Convert the mido object into a musicpy data structure.  
-  * Execute the split\_all() function. This built-in method uses pitch density and timing to automatically isolate the monophonic lead line from polyphonic chordal structures.  
-* **Step 3: Track Routing & Fallbacks**  
-  * Route the extracted lead line to the melody track.  
-  * Group the remaining extracted harmony and bass parts into the accompaniment track.  
-  * *Fallback:* If split\_all() fails to confidently separate a highly complex track, default to a custom **Skyline Algorithm** (extracting the highest-pitched continuous note at any given 16th-note interval).  
-* **Step 4: Safe Serialization (mido)**  
-  * Convert the separated musicpy objects back to mido tracks and save them as strictly formatted .mid files to prevent downstream corruption.
+### Skyline Algorithm Detail
 
-## **6\. Data Contracts (v3.0.0)**
+At each quantized time slot (≈0.0625 sec at 120 BPM):
+- All notes with onsets in that slot are grouped
+- The note with the highest MIDI pitch is assigned to melody
+- All remaining notes are assigned to accompaniment
+- This guarantees monophonic melody output
 
-* **Consumes:** InputBundle  
-* **Produces:** TranscriptionResult containing Claim-Check URIs.  
-  JSON  
-  "midi\_tracks": \[  
-    {  
-      "instrument": "melody",  
-      "source\_stem": "s3://oh-sheet-pipeline/jobs/{job\_id}/melody.mid"  
-    },  
-    {  
-      "instrument": "other",  
-      "source\_stem": "s3://oh-sheet-pipeline/jobs/{job\_id}/accompaniment.mid"  
-    }  
-  \]  
+## 6. Celery Task
+
+* **Task name:** `decompose.run`
+* **Queue:** `arrange`
+* **Worker file:** `backend/workers/decompose.py`
+* **Service file:** `backend/services/decompose.py`
+* **Payload:** `(job_id: str, payload_uri: str)` — standard claim-check pattern via `BlobStore`
