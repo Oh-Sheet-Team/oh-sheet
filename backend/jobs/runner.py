@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 from celery import Celery
 
+from backend.config import settings
 from backend.contracts import (
     SCHEMA_VERSION,
     EngravedOutput,
@@ -237,6 +238,7 @@ class PipelineRunner:
         score_dict: dict | None = None
         perf_dict: dict | None = None
         result_dict: dict | None = None
+        tunechat_task: asyncio.Task | None = None
 
         log.info(
             "pipeline start job_id=%s variant=%s plan=%s skip_humanizer=%s source=%s "
@@ -264,6 +266,47 @@ class PipelineRunner:
                     payload_uri = self._serialize_stage_input(job_id, step, current_payload)
                     output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.stage_timeout_sec)
                     current_payload = self.blob_store.get_json(output_uri)
+
+                    # Update the display title/artist from the resolved
+                    # ingest metadata. The user submitted a YouTube URL as
+                    # the "title" — ingest probed the video and resolved
+                    # the real song name + artist. We update title/composer
+                    # so the result screen shows the song name, not the URL.
+                    ingest_meta = current_payload.get("metadata", {})
+                    resolved_title = ingest_meta.get("title")
+                    resolved_artist = ingest_meta.get("artist")
+                    # Keep the original URL for linking back to the source
+                    original_url = title if title.startswith("http") else None
+                    if resolved_title and resolved_title != title:
+                        title = resolved_title
+                    if resolved_artist and resolved_artist != composer:
+                        composer = resolved_artist
+                    # Update the bundle so the API returns the resolved
+                    # title instead of the raw YouTube URL.
+                    bundle = bundle.model_copy(update={
+                        "metadata": bundle.metadata.model_copy(update={
+                            "title": title,
+                            "artist": composer if composer != "Unknown" else bundle.metadata.artist,
+                            "source_url": original_url,
+                        }),
+                    })
+
+                    # Fire TuneChat request in parallel — runs alongside
+                    # Oh Sheet's own pipeline stages. We await the result
+                    # after the pipeline finishes.
+                    tunechat_task = None
+                    if settings.tunechat_enabled:
+                        audio_data = current_payload.get("audio")
+                        if audio_data and audio_data.get("uri"):
+                            try:
+                                from backend.services.tunechat_client import transcribe_via_tunechat
+                                audio_bytes = self.blob_store.get_bytes(audio_data["uri"])
+                                tunechat_task = asyncio.create_task(
+                                    transcribe_via_tunechat(audio_bytes, "audio.wav"),
+                                )
+                                log.info("tunechat: request fired in parallel for job_id=%s", job_id)
+                            except Exception as exc:  # noqa: BLE001
+                                log.warning("tunechat: failed to start request: %s", exc)
 
                 elif step == "transcribe":
                     payload_uri = self._serialize_stage_input(job_id, step, current_payload)
@@ -353,5 +396,24 @@ class PipelineRunner:
             result = result.model_copy(
                 update={"transcription_midi_uri": txr_dict["transcription_midi_uri"]},
             )
+        # Await the parallel TuneChat request (if it was fired).
+        # The variable tunechat_task is set inside the ingest step above.
+        # If it doesn't exist (no ingest step, or tunechat disabled),
+        # we skip this block entirely.
+        try:
+            if tunechat_task is not None:
+                tc_result = await tunechat_task
+                if tc_result is not None:
+                    result = result.model_copy(update={
+                        "tunechat_job_id": tc_result.job_id,
+                        "tunechat_preview_image_url": tc_result.preview_image_url,
+                    })
+                    log.info(
+                        "tunechat: attached to result job_id=%s tc_job_id=%s",
+                        job_id, tc_result.job_id,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("tunechat: failed to attach result: %s", exc)
+
         log.info("pipeline finished job_id=%s", job_id)
         return result
