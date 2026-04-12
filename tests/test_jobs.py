@@ -1,6 +1,10 @@
 import time
+from unittest.mock import patch
+
+import pytest
 
 from backend.config import settings
+from backend.contracts import RemoteAudioFile
 
 
 def _upload_audio(client):
@@ -8,6 +12,26 @@ def _upload_audio(client):
         "/v1/uploads/audio",
         files={"file": ("song.wav", b"RIFFfake wav data", "audio/wav")},
     ).json()
+
+
+@pytest.fixture
+def mock_youtube_download():
+    """Stub out _download_youtube_sync so YouTube-URL tests don't hit the
+    network. Returns a minimal RemoteAudioFile + title/uploader tuple so
+    the ingest stage completes normally."""
+    with patch("backend.services.ingest._download_youtube_sync") as mock_dl:
+        mock_dl.return_value = (
+            RemoteAudioFile(
+                uri="file:///tmp/fake.wav",
+                format="wav",
+                sample_rate=44100,
+                duration_sec=60.0,
+                channels=2,
+            ),
+            "Mock Song Title",
+            "Mock Uploader",
+        )
+        yield mock_dl
 
 
 def test_create_job_from_audio_runs_to_completion(client):
@@ -55,11 +79,121 @@ def test_create_job_rejects_both_audio_and_midi(client):
     assert response.status_code == 400
 
 
+def test_create_job_rejects_audio_with_nonexistent_uri(client):
+    # Integrity: clients must not be able to forge a RemoteAudioFile
+    # pointing at a blob URI that was never uploaded. Without this
+    # check the route accepted the request, pushed it through stub
+    # stages, and reported a successful job — the user only saw the
+    # problem when they tried to play the resulting "audio" (which
+    # was nothing at all).
+    bogus_audio = {
+        "uri": "file:///tmp/this-blob-was-never-uploaded.wav",
+        "format": "wav",
+        "sample_rate": 44100,
+        "duration_sec": 1.0,
+        "channels": 2,
+        "content_hash": "0" * 64,
+    }
+    response = client.post(
+        "/v1/jobs",
+        json={"audio": bogus_audio, "title": "Forged", "artist": "Ghost"},
+    )
+    assert response.status_code == 400
+    assert "uri" in response.json()["detail"].lower()
+
+
+def test_create_job_rejects_midi_with_nonexistent_uri(client):
+    bogus_midi = {
+        "uri": "file:///tmp/never-uploaded.mid",
+        "ticks_per_beat": 480,
+        "content_hash": "0" * 64,
+    }
+    response = client.post(
+        "/v1/jobs",
+        json={"midi": bogus_midi, "title": "Forged", "artist": "Ghost"},
+    )
+    assert response.status_code == 400
+    assert "uri" in response.json()["detail"].lower()
+
+
 def test_create_job_title_lookup_only(client):
     response = client.post("/v1/jobs", json={"title": "Yesterday", "artist": "The Beatles"})
     assert response.status_code == 202
     job = response.json()
     assert job["variant"] == "full"
+
+
+# ---------------------------------------------------------------------------
+# prefer_clean_source: per-job opt-in to the cover_search fast path
+# ---------------------------------------------------------------------------
+#
+# The upload screen has a "find a clean piano cover" toggle. When the user
+# flips it on, the frontend must be able to pass prefer_clean_source=true
+# in the POST /v1/jobs body, and that flag must land on the InputBundle's
+# metadata so the ingest stage can read it. These tests exercise the route
+# wiring; the ingest-side consumption is tested in test_ingest_cover_search.
+
+
+def test_prefer_clean_source_defaults_to_false_when_omitted(client):
+    # Omitting the flag must NOT break the request (backward compat with
+    # existing frontends that don't know about this field yet).
+    response = client.post("/v1/jobs", json={"title": "Yesterday"})
+    assert response.status_code == 202
+
+
+def test_prefer_clean_source_true_is_accepted_by_create_job(client, mock_youtube_download):
+    response = client.post(
+        "/v1/jobs",
+        json={"title": "https://youtu.be/fJ9rUzIMcZQ", "prefer_clean_source": True},
+    )
+    assert response.status_code == 202, response.text
+
+
+def test_prefer_clean_source_is_rejected_on_bad_type(client):
+    # Pydantic should reject a non-bool value cleanly — documented contract.
+    response = client.post(
+        "/v1/jobs",
+        json={"title": "Yesterday", "prefer_clean_source": "sometimes"},
+    )
+    assert response.status_code == 422
+
+
+def test_prefer_clean_source_lands_on_bundle_metadata(client, mock_youtube_download):
+    # The submitted flag must survive the trip into the JobManager's stored
+    # InputBundle — otherwise the ingest stage never sees it.
+    from backend.api.deps import get_job_manager
+    from backend.main import app
+
+    response = client.post(
+        "/v1/jobs",
+        json={"title": "https://youtu.be/fJ9rUzIMcZQ", "prefer_clean_source": True},
+    )
+    assert response.status_code == 202, response.text
+    job_id = response.json()["job_id"]
+
+    # Reach into the in-memory JobManager to verify the stored bundle.
+    # Same DI singleton the route uses, so the record is guaranteed to exist.
+    manager = app.dependency_overrides.get(get_job_manager, get_job_manager)()
+    record = manager.get(job_id)
+    assert record is not None
+    assert record.bundle.metadata.prefer_clean_source is True
+
+
+def test_prefer_clean_source_false_lands_on_bundle_metadata(client, mock_youtube_download):
+    from backend.api.deps import get_job_manager
+    from backend.main import app
+
+    response = client.post(
+        "/v1/jobs",
+        json={"title": "https://youtu.be/fJ9rUzIMcZQ", "prefer_clean_source": False},
+    )
+    assert response.status_code == 202, response.text
+    job_id = response.json()["job_id"]
+
+    manager = app.dependency_overrides.get(get_job_manager, get_job_manager)()
+    record = manager.get(job_id)
+    assert record is not None
+    assert record.bundle.metadata.prefer_clean_source is False
 
 
 def test_get_job_returns_404_for_unknown(client):

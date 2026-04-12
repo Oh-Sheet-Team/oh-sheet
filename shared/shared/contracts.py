@@ -129,6 +129,12 @@ class InputMetadata(BaseModel):
     title: str | None = None
     artist: str | None = None
     source: Literal["title_lookup", "audio_upload", "midi_upload"]
+    # When True, the ingest stage will attempt to find a clean piano
+    # cover of the song (via yt-dlp search + scoring) and swap the
+    # user's URL for the cover's URL before transcription. See
+    # backend/services/cover_search.py for the matching logic.
+    # Defaults to False so existing callers and fixtures keep working.
+    prefer_clean_source: bool = False
 
 
 class InputBundle(BaseModel):
@@ -207,6 +213,10 @@ class ScoreChordEvent(BaseModel):
     duration_beat: float
     label: str                                 # Harte notation
     root: int
+    # Propagated from the upstream ``RealtimeChordEvent`` so engrave can
+    # gate chord-symbol rendering on transcriber confidence. Defaults to
+    # 1.0 for legacy/test inputs that don't carry a confidence score.
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class ScoreSection(BaseModel):
@@ -244,6 +254,9 @@ class ExpressiveNote(BaseModel):
     velocity: int = Field(..., ge=0, le=127)
     hand: Literal["rh", "lh"]
     voice: int
+    # Onset-only nudge: engrave applies this to the attack time and leaves the
+    # release on the metronomic grid, so a positive value shortens the note
+    # and a negative value lengthens it. Do not interpret as a whole-note shift.
     timing_offset_ms: float = Field(..., ge=-50.0, le=50.0)
     velocity_offset: int = Field(..., ge=-30, le=30)
 
