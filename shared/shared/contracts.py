@@ -335,7 +335,7 @@ PipelineVariant = Literal["full", "audio_upload", "midi_upload", "sheet_only"]
 # ``arrange`` — hand assignment, dedup, quantization (default).
 # ``condense_transform`` — merge all tracks into one piano stream (condense) then
 # transform (passthrough for now).
-ScorePipelineMode = Literal["arrange", "condense_transform"]
+ScorePipelineMode = Literal["arrange", "condense_transform", "decompose_assemble"]
 
 
 class PipelineConfig(BaseModel):
@@ -362,4 +362,11 @@ class PipelineConfig(BaseModel):
                 pass
             else:
                 plan[idx : idx + 1] = ["condense", "transform"]
+        elif self.score_pipeline == "decompose_assemble":
+            try:
+                idx = plan.index("arrange")
+            except ValueError:
+                pass
+            else:
+                plan[idx : idx + 1] = ["decompose", "assemble"]
         return plan
