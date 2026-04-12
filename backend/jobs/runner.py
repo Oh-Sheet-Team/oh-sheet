@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 from celery import Celery
 
+from backend.config import settings
 from backend.contracts import (
     SCHEMA_VERSION,
     EngravedOutput,
@@ -333,6 +334,32 @@ class PipelineRunner:
                         txr_obj = _bundle_to_transcription(bundle_obj)
                         txr_dict = txr_obj.model_dump(mode="json")
                     payload_uri = self._serialize_stage_input(job_id, step, txr_dict)
+                    output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.stage_timeout_sec)
+                    score_dict = self.blob_store.get_json(output_uri)
+
+                elif step == "decompose":
+                    if txr_dict is None:
+                        bundle_obj = InputBundle.model_validate(current_payload)
+                        log.info(
+                            "pipeline job_id=%s decompose: using MIDI→TranscriptionResult passthrough",
+                            job_id,
+                        )
+                        txr_obj = _bundle_to_transcription(bundle_obj)
+                        txr_dict = txr_obj.model_dump(mode="json")
+                    payload_uri = self._serialize_stage_input(job_id, step, txr_dict)
+                    output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.stage_timeout_sec)
+                    txr_dict = self.blob_store.get_json(output_uri)
+
+                elif step == "assemble":
+                    if txr_dict is None:
+                        raise RuntimeError(
+                            "assemble stage requires a TranscriptionResult — none was produced"
+                        )
+                    assemble_envelope = {
+                        "transcription": txr_dict,
+                        "difficulty": settings.assemble_difficulty,
+                    }
+                    payload_uri = self._serialize_stage_input(job_id, step, assemble_envelope)
                     output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.stage_timeout_sec)
                     score_dict = self.blob_store.get_json(output_uri)
 
