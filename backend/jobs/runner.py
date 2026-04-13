@@ -332,21 +332,30 @@ class PipelineRunner:
                         score_dict = refined["payload"]
 
                 elif step == "engrave":
+                    # Title/composer precedence: refined ScoreMetadata > InputMetadata > defaults.
+                    refined_md: dict | None = None
+                    if perf_dict is not None:
+                        refined_md = perf_dict.get("score", {}).get("metadata") if isinstance(perf_dict, dict) else None
+                    elif score_dict is not None:
+                        refined_md = score_dict.get("metadata") if isinstance(score_dict, dict) else None
+                    resolved_title = (refined_md or {}).get("title") or title
+                    resolved_composer = (refined_md or {}).get("composer") or composer
+
                     if perf_dict is not None:
                         engrave_envelope = {
                             "payload": perf_dict,
                             "payload_type": "HumanizedPerformance",
                             "job_id": job_id,
-                            "title": title,
-                            "composer": composer,
+                            "title": resolved_title,
+                            "composer": resolved_composer,
                         }
                     elif score_dict is not None:
                         engrave_envelope = {
                             "payload": score_dict,
                             "payload_type": "PianoScore",
                             "job_id": job_id,
-                            "title": title,
-                            "composer": composer,
+                            "title": resolved_title,
+                            "composer": resolved_composer,
                         }
                     else:
                         raise RuntimeError("engrave stage requires a score or performance — none was produced")
