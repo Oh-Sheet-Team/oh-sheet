@@ -6,9 +6,10 @@ fixture's ``title_hint`` / ``artist_hint``), and scores the output
 against ``ground_truth.json``. Writes per-song and aggregate metrics
 to ``refine-baseline.json``.
 
-Requires ``OHSHEET_ANTHROPIC_API_KEY`` to be set. Costs real money.
-Excluded from the default test suite and CI — run manually via
-``make eval-refine``.
+Requires ``OHSHEET_ANTHROPIC_API_KEY`` to be set — either exported in
+the shell or written to the repo-root ``.env`` file (loaded by
+pydantic-settings). Costs real money. Excluded from the default test
+suite and CI — run manually via ``make eval-refine``.
 
 Metrics
 -------
@@ -16,7 +17,7 @@ Metrics
 * composer_exact_match         — same, for composer
 * key_match                    — true if tonic + mode match (Db:major == C#:major)
 * time_signature_exact         — tuple equality
-* tempo_within_5bpm            — |predicted - ground| <= 5
+* tempo_within_10bpm           — |predicted - ground| <= 10 (tempo markings are interpretive)
 * section_label_f1             — F1 on section *labels* by greedy overlap match
 * repeat_f1                    — F1 on (start_beat, end_beat) pairs (rounded to 0.1 beat)
 """
@@ -25,7 +26,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,7 +37,10 @@ sys.path.insert(0, str(REPO_ROOT))
 from shared.contracts import PianoScore  # noqa: E402
 from shared.storage.local import LocalBlobStore  # noqa: E402
 
+from backend.config import settings  # noqa: E402
 from backend.services.refine import RefineService  # noqa: E402
+
+_TEMPO_TOLERANCE_BPM = 10
 
 
 # Enharmonic tonic equivalence: normalize before comparison.
@@ -69,7 +72,8 @@ class FixtureResult:
     composer_match: bool
     key_match: bool
     time_sig_match: bool
-    tempo_within_5bpm: bool
+    tempo_within_tolerance: bool
+    tempo_predicted: float
     section_f1: float
     repeat_f1: float
     predicted_title: str | None
@@ -147,7 +151,8 @@ async def _eval_fixture(svc: RefineService, fixture_dir: Path) -> FixtureResult:
         composer_match=_norm_str(md.composer) == _norm_str(gt.get("composer")),
         key_match=_norm_key(md.key) == _norm_key(gt["key_signature"]),
         time_sig_match=md.time_signature == ts_gt,
-        tempo_within_5bpm=abs(tempo_pred - tempo_gt) <= 5,
+        tempo_within_tolerance=abs(tempo_pred - tempo_gt) <= _TEMPO_TOLERANCE_BPM,
+        tempo_predicted=tempo_pred,
         section_f1=_score_sections(pred_sections, gt_sections),
         repeat_f1=_score_repeats(pred_repeats, gt_repeats),
         predicted_title=md.title,
@@ -156,8 +161,12 @@ async def _eval_fixture(svc: RefineService, fixture_dir: Path) -> FixtureResult:
 
 
 async def _main(out_path: Path, fixtures_root: Path) -> int:
-    if not os.environ.get("OHSHEET_ANTHROPIC_API_KEY"):
-        print("ERROR: OHSHEET_ANTHROPIC_API_KEY is not set.", file=sys.stderr)
+    if not settings.anthropic_api_key:
+        print(
+            "ERROR: OHSHEET_ANTHROPIC_API_KEY is not set. "
+            "Export it in your shell or add it to .env at the repo root.",
+            file=sys.stderr,
+        )
         return 2
     if not fixtures_root.is_dir():
         print(f"ERROR: fixtures root not found: {fixtures_root}", file=sys.stderr)
@@ -183,18 +192,20 @@ async def _main(out_path: Path, fixtures_root: Path) -> int:
         print(
             f"  title={res.title_match} composer={res.composer_match} "
             f"key={res.key_match} ts={res.time_sig_match} "
-            f"tempo<=5bpm={res.tempo_within_5bpm} "
+            f"tempo<={_TEMPO_TOLERANCE_BPM}bpm={res.tempo_within_tolerance} "
             f"sec_f1={res.section_f1:.2f} rep_f1={res.repeat_f1:.2f}"
         )
 
     n = len(results)
+    tempo_key = f"tempo_within_{_TEMPO_TOLERANCE_BPM}bpm"
     aggregate = {
         "count": n,
+        "tempo_tolerance_bpm": _TEMPO_TOLERANCE_BPM,
         "title_exact_match_pct": sum(r.title_match for r in results) / n * 100,
         "composer_exact_match_pct": sum(r.composer_match for r in results) / n * 100,
         "key_match_pct": sum(r.key_match for r in results) / n * 100,
         "time_signature_exact_pct": sum(r.time_sig_match for r in results) / n * 100,
-        "tempo_within_5bpm_pct": sum(r.tempo_within_5bpm for r in results) / n * 100,
+        f"{tempo_key}_pct": sum(r.tempo_within_tolerance for r in results) / n * 100,
         "section_label_f1_avg": sum(r.section_f1 for r in results) / n,
         "repeat_f1_avg": sum(r.repeat_f1 for r in results) / n,
     }
@@ -207,7 +218,8 @@ async def _main(out_path: Path, fixtures_root: Path) -> int:
                 "composer_match": r.composer_match,
                 "key_match": r.key_match,
                 "time_signature_exact": r.time_sig_match,
-                "tempo_within_5bpm": r.tempo_within_5bpm,
+                tempo_key: r.tempo_within_tolerance,
+                "tempo_predicted_bpm": r.tempo_predicted,
                 "section_label_f1": r.section_f1,
                 "repeat_f1": r.repeat_f1,
                 "predicted_title": r.predicted_title,

@@ -135,9 +135,8 @@ eval:
 # Live refine eval. Runs the RefineService against
 # eval/fixtures/refine_golden/ using the real Anthropic API.
 # Costs real money; excluded from CI. Writes refine-baseline.json.
-# Requires OHSHEET_ANTHROPIC_API_KEY.
+# Requires OHSHEET_ANTHROPIC_API_KEY (exported or in .env at repo root).
 eval-refine:
-	@test -n "$$OHSHEET_ANTHROPIC_API_KEY" || (echo "OHSHEET_ANTHROPIC_API_KEY not set" && exit 2)
 	python scripts/eval_refine.py --out refine-baseline.json
 
 lint:
