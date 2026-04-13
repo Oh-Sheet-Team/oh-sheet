@@ -32,7 +32,7 @@ pytest tests/test_uploads.py::test_upload_audio -v
 
 ### Backend (Python 3.10+, FastAPI)
 
-**Pipeline stages** (`backend/workers/`, `svc-decomposer/`, `svc-assembler/`): `PipelineRunner` dispatches each stage as a Celery task via Redis. Monolith workers (ingest, humanize, engrave) live in `backend/workers/`; decomposer and assembler are separate services with their own Celery apps. Most stages are stubs returning shape-correct contracts; transcribe has a real Basic Pitch implementation.
+**Pipeline stages** (`backend/workers/`): `PipelineRunner` dispatches each stage as a Celery task via Redis. All workers (ingest, transcribe, arrange, humanize, engrave) live in `backend/workers/`. Most stages are stubs returning shape-correct contracts; transcribe has a real Basic Pitch implementation.
 
 **Data contracts** (`shared/shared/contracts.py`, re-exported by `backend/contracts.py`): Schema v3.0.0 Pydantic models define all inter-stage data. Key types: `InputBundle`, `TranscriptionResult`, `PianoScore`, `EngravedOutput`. Pipeline variants (`full`, `audio_upload`, `midi_upload`, `sheet_only`) determine which stages run.
 

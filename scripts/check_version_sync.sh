@@ -21,12 +21,6 @@ check "backend/__init__.py" \
 check "shared/pyproject.toml" \
   "$(grep -m1 '^version' shared/pyproject.toml | sed 's/version *= *"\(.*\)"/\1/')"
 
-check "svc-decomposer/pyproject.toml" \
-  "$(grep -m1 '^version' svc-decomposer/pyproject.toml | sed 's/version *= *"\(.*\)"/\1/')"
-
-check "svc-assembler/pyproject.toml" \
-  "$(grep -m1 '^version' svc-assembler/pyproject.toml | sed 's/version *= *"\(.*\)"/\1/')"
-
 # Check semver portion of pubspec (strip +build_number)
 PUBSPEC_VERSION=$(grep -m1 '^version:' frontend/pubspec.yaml | sed 's/version: *\([^+]*\).*/\1/')
 check "frontend/pubspec.yaml" "$PUBSPEC_VERSION"

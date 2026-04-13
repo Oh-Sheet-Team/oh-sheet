@@ -132,8 +132,6 @@ packages = ["backend"]
 version_toml = [
     "pyproject.toml:project.version",
     "shared/pyproject.toml:project.version",
-    "svc-decomposer/pyproject.toml:project.version",
-    "svc-assembler/pyproject.toml:project.version",
 ]
 version_variables = [
     "backend/__init__.py:__version__",
