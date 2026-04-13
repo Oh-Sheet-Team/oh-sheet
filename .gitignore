@@ -37,3 +37,4 @@ e2e/playwright-report/index.html
 dump.rdb
 .claude/worktrees/
 eval-results*.json
+.worktrees/
