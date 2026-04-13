@@ -248,13 +248,13 @@ class RefineService:
         md = score.metadata
         update: dict[str, Any] = {}
 
-        if "title" in refinements:
+        if "title" in refinements and refinements["title"] is not None:
             update["title"] = str(refinements["title"])[:200]
-        if "composer" in refinements:
+        if "composer" in refinements and refinements["composer"] is not None:
             update["composer"] = str(refinements["composer"])[:200]
-        if "arranger" in refinements:
+        if "arranger" in refinements and refinements["arranger"] is not None:
             update["arranger"] = str(refinements["arranger"])[:200]
-        if "tempo_marking" in refinements:
+        if "tempo_marking" in refinements and refinements["tempo_marking"] is not None:
             update["tempo_marking"] = str(refinements["tempo_marking"])[:100]
         if "staff_split_hint" in refinements:
             try:

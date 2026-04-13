@@ -248,3 +248,24 @@ async def test_invalid_repeat_kind_is_dropped(blob):
     svc = RefineService(blob_store=blob, client=fake)
     result = await svc.run(_score(), title_hint=None, artist_hint=None)
     assert [r.kind for r in result.metadata.repeats] == ["simple"]
+
+
+@pytest.mark.asyncio
+async def test_null_string_fields_are_skipped_not_stringified(blob):
+    """LLM returning ``null`` for a string field should NOT stringify it."""
+    refinements = {
+        "title": None,
+        "composer": None,
+        "arranger": None,
+        "tempo_marking": None,
+    }
+    fake = _FakeAnthropic([
+        _FakeResponse([_FakeToolUseBlock("submit_refinements", refinements)]),
+    ])
+    svc = RefineService(blob_store=blob, client=fake)
+    result = await svc.run(_score(), title_hint=None, artist_hint=None)
+    md = result.metadata
+    assert md.title is None
+    assert md.composer is None
+    assert md.arranger is None
+    assert md.tempo_marking is None
