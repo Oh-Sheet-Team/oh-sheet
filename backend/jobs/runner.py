@@ -281,6 +281,10 @@ class PipelineRunner:
         txr_dict: dict | None = None
         score_dict: dict | None = None
         perf_dict: dict | None = None
+        # Phase 2 (INT-02, INT-03): refine output envelope. Non-None only when
+        # the refine stage ran AND succeeded. Engrave prefers this over
+        # perf_dict/score_dict because it carries the post-edit payload.
+        refined_dict: dict | None = None
         result_dict: dict | None = None
 
         log.info(
@@ -358,8 +362,90 @@ class PipelineRunner:
                     output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.stage_timeout_sec)
                     perf_dict = self.blob_store.get_json(output_uri)
 
-                elif step == "engrave":
+                elif step == "refine":
+                    # Phase 2 (INT-01, INT-03, INT-04, INT-05):
+                    # Refine is opt-in and skip-on-failure. Any exception from
+                    # _dispatch_task (worker RefineLLMError, validator all-rejected,
+                    # transient SDK error after retry exhaustion, duplicate-target
+                    # rejection per D-15, etc.) is translated to a stage_completed
+                    # event with message="refine_skipped: <reason>" — NEVER
+                    # stage_failed. The job proceeds to engrave with the
+                    # unrefined perf_dict/score_dict; final status remains
+                    # succeeded (INT-04).
                     if perf_dict is not None:
+                        envelope_payload_type = "HumanizedPerformance"
+                        envelope_payload_source = perf_dict
+                    elif score_dict is not None:
+                        envelope_payload_type = "PianoScore"
+                        envelope_payload_source = score_dict
+                    else:
+                        raise RuntimeError(
+                            "refine stage requires a humanized performance or piano score — "
+                            "none was produced (execution plan produced 'refine' before any "
+                            "score-producing stage — this should be impossible given "
+                            "PipelineConfig.get_execution_plan's insertion rules)"
+                        )
+                    refine_envelope = {
+                        "payload_type": envelope_payload_type,
+                        "payload": envelope_payload_source,
+                        "job_id": job_id,
+                        "title": title,
+                        "composer": composer,
+                    }
+                    try:
+                        payload_uri = self._serialize_stage_input(job_id, step, refine_envelope)
+                        output_uri = await self._dispatch_task(
+                            task_name, job_id, payload_uri, config.stage_timeout_sec,
+                        )
+                        refined_dict = self.blob_store.get_json(output_uri)
+                    except Exception as exc:  # noqa: BLE001 — refine is explicitly skip-on-any-exception per INT-03
+                        reason = type(exc).__name__.lower()
+                        log.warning(
+                            "refine skipped job_id=%s reason=%s exc=%s",
+                            job_id, reason, exc,
+                        )
+                        # Structured log line aggregable as a counter until
+                        # Prometheus/Langfuse infrastructure ships. Format is
+                        # load-bearing: test_runner_refine_skip.py asserts on
+                        # the exact "refine_skip_total reason=" prefix.
+                        log.info(
+                            "refine_skip_total reason=%s job_id=%s", reason, job_id,
+                        )
+                        elapsed_ms = (time.perf_counter() - t0) * 1000
+                        log.info(
+                            "pipeline stage done job_id=%s stage=%s duration_ms=%.0f",
+                            job_id, step, elapsed_ms,
+                        )
+                        # INT-03 / INT-05: emit stage_completed with skip message.
+                        # The emit helper constructs JobEvent; JobEvent.message is
+                        # already nullable in Phase 1 schema so no contract change.
+                        emit(
+                            step, "stage_completed",
+                            progress=(i + 1) / n,
+                            message=f"refine_skipped: {reason}",
+                        )
+                        # Skip the outer stage_completed emit (bottom of the loop)
+                        # — we already emitted. refined_dict stays None; engrave
+                        # proceeds with perf_dict/score_dict (INT-04 succeeded-on-skip).
+                        continue
+
+                elif step == "engrave":
+                    # Phase 2 (INT-02): prefer refined_dict (set by refine branch
+                    # above when refine succeeded). Falls through to the existing
+                    # perf_dict / score_dict branches when refine was skipped or
+                    # not in the plan. The engrave worker's payload_type dispatch
+                    # (Phase 1 D-07 + gap-closure 01-09) handles RefinedPerformance
+                    # unwrapping for both HumanizedPerformance and PianoScore inner
+                    # types — no engrave worker change required.
+                    if refined_dict is not None:
+                        engrave_envelope = {
+                            "payload": refined_dict["payload"],
+                            "payload_type": "RefinedPerformance",
+                            "job_id": job_id,
+                            "title": title,
+                            "composer": composer,
+                        }
+                    elif perf_dict is not None:
                         engrave_envelope = {
                             "payload": perf_dict,
                             "payload_type": "HumanizedPerformance",
