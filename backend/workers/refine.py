@@ -27,7 +27,6 @@ import asyncio
 import logging
 
 import anthropic
-
 from shared.contracts import HumanizedPerformance, PianoScore
 from shared.storage.local import LocalBlobStore
 
