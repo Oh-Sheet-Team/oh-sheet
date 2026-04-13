@@ -154,27 +154,12 @@ async def create_job(
         effective_enable_refine = False
         refine_coerced_by_kill_switch = True
 
-    # Phase 1 gap closure (WR-01): the runner's dispatch loop has no
-    # `elif step == "refine"` branch — any plan containing "refine" would
-    # crash with `RuntimeError: unknown stage in execution plan: 'refine'`
-    # once the runner tried to process it. The refine worker lives in
-    # Phase 2. Until Phase 2 ships, fast-fail at the submission boundary
-    # so the operator sees a clear 503 instead of a silent background
-    # crash (VERIFICATION gap 1).
-    #
-    # ORDER IS LOAD-BEARING: this gate sits AFTER kill-switch coercion
-    # (lines above) so that `kill_switch=true + enable_refine=true + key_set`
-    # still returns 202 — the kill switch dominates, coercing
-    # effective_enable_refine to False BEFORE this gate evaluates.
-    # This preserves V12 (plan parity) and V13 (log signal) exactly.
-    if effective_enable_refine:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "refine stage not yet implemented (Phase 2 pending) — "
-                "set enable_refine=false or wait for Phase 2"
-            ),
-        )
+    # Phase 2 (02-06): the Phase-1 HTTP 503 gate that used to live here
+    # has been removed now that the refine Celery task (Plan 04), runner
+    # wiring (Plan 05), and skip-on-failure semantics (INT-03) are in
+    # place. `effective_enable_refine=True` now flows through to
+    # PipelineConfig and the runner dispatches refine.run. Kill-switch
+    # coercion above still dominates and preserves V12/V13 invariants.
 
     # Build InputMetadata once — prefer_clean_source is threaded through
     # every variant so uploads can theoretically opt in too (the ingest
