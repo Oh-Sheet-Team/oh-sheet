@@ -10,9 +10,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-SCHEMA_VERSION = "3.0.0"
+SCHEMA_VERSION = "3.1.0"
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +300,92 @@ class HumanizedPerformance(BaseModel):
     expression: ExpressionMap
     score: PianoScore
     quality: QualitySignal
+
+
+# ---------------------------------------------------------------------------
+# Contract 4b — REFINE (opt-in LLM stage between humanize and engrave)
+# ---------------------------------------------------------------------------
+
+RefineRationale = Literal[
+    "harmony_correction",
+    "ghost_note_removal",
+    "octave_correction",
+    "voice_leading",
+    "duplicate_removal",
+    "out_of_range",
+    "timing_cleanup",
+    "velocity_cleanup",
+    "other",
+]
+
+
+class RefineEditOp(BaseModel):
+    """A single modify-or-delete edit emitted by the refine LLM.
+
+    The LLM has modify+delete authority only; note addition is explicitly
+    forbidden (see REQUIREMENTS.md "Out of Scope" — LLM adding notes). The
+    ``rationale`` enum is closed per CTR-01; new categories require a schema
+    bump. Phase 2 may tighten after prompt-quality data is in.
+    """
+
+    op: Literal["modify", "delete"]
+    target_note_id: str
+    rationale: RefineRationale
+    # Modify-only fields — all optional; validator enforces at-least-one for op="modify".
+    # For op="delete", target_note_id alone is sufficient; these stay None.
+    pitch: int | None = Field(default=None, ge=0, le=127)
+    velocity: int | None = Field(default=None, ge=0, le=127)          # absolute replacement
+    velocity_offset: int | None = Field(default=None, ge=-30, le=30)  # additive (mirrors ExpressiveNote)
+    timing_offset_ms: float | None = Field(default=None, ge=-50.0, le=50.0)
+    duration_beat: float | None = Field(default=None, ge=0.0)
+
+    @model_validator(mode="after")
+    def _modify_requires_at_least_one_field(self) -> "RefineEditOp":
+        if self.op == "modify" and all(
+            v is None
+            for v in (
+                self.pitch,
+                self.velocity,
+                self.velocity_offset,
+                self.timing_offset_ms,
+                self.duration_beat,
+            )
+        ):
+            raise ValueError(
+                "RefineEditOp with op='modify' must provide at least one of: "
+                "pitch, velocity, velocity_offset, timing_offset_ms, duration_beat"
+            )
+        return self
+
+
+class RefineCitation(BaseModel):
+    """Web-search grounding citation for an LLM refine decision.
+
+    ``confidence`` is [0.0, 1.0] per Claude's Discretion (mirrors QualitySignal.overall_confidence,
+    Note.confidence, ScoreChordEvent.confidence convention).
+    """
+
+    url: str
+    snippet: str
+    confidence: float = Field(..., ge=0.0, le=1.0)
+
+
+class RefinedPerformance(BaseModel):
+    """Wrapper around a HumanizedPerformance post-LLM refinement (D-05, D-06).
+
+    Nested composition — NOT subclass (refined is not a humanized-in-place;
+    edits are a separate log). Engrave unwraps via ``refined.refined_performance``
+    per D-07. ``source_performance_digest`` is the SHA-256 (hexdigest, 64 chars)
+    of the pre-edit HumanizedPerformance — drift detection between refine
+    input and output.
+    """
+
+    schema_version: str = SCHEMA_VERSION  # "3.1.0" post-bump
+    refined_performance: HumanizedPerformance  # POST-edit — what engrave renders
+    edits: list[RefineEditOp]
+    citations: list[RefineCitation]
+    model: str
+    source_performance_digest: str  # hashlib.sha256(canonical_json).hexdigest() — 64-char lowercase hex
 
 
 # ---------------------------------------------------------------------------
