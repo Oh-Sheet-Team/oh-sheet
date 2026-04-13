@@ -23,7 +23,7 @@ from backend.config import (
     Settings,
 )
 
-_RAW_MOCK_KEY = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+_RAW_MOCK_KEY = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"  # pragma: allowlist secret
 
 
 # ---------------------------------------------------------------------------
