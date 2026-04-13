@@ -59,6 +59,29 @@ def test_score_metadata_accepts_refinement_fields() -> None:
     assert len(md.repeats) == 1
 
 
+def test_repeat_rejects_unsupported_kind() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Repeat(start_beat=0.0, end_beat=16.0, kind="da_capo")  # type: ignore[arg-type]
+
+
+def test_staff_split_hint_rejects_out_of_range() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    for bad in (-1, 128, 200):
+        with pytest.raises(ValidationError):
+            ScoreMetadata(
+                key="C:major",
+                time_signature=(4, 4),
+                tempo_map=[TempoMapEntry(time_sec=0.0, beat=0.0, bpm=120.0)],
+                difficulty="intermediate",
+                staff_split_hint=bad,
+            )
+
+
 def test_score_metadata_refinement_fields_all_optional() -> None:
     md = ScoreMetadata(
         key="C:major",

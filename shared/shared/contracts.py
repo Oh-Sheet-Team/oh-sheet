@@ -254,7 +254,8 @@ class ScoreMetadata(BaseModel):
     composer: str | None = None
     arranger: str | None = None
     tempo_marking: str | None = None        # e.g., "Andante"
-    staff_split_hint: int | None = None     # MIDI pitch; engrave default ~60
+    # MIDI pitch where the left/right hand split — engrave's default is ~60.
+    staff_split_hint: int | None = Field(default=None, ge=0, le=127)
     repeats: list[Repeat] = Field(default_factory=list)
 
 
