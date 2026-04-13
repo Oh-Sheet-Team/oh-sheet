@@ -3,10 +3,8 @@ from __future__ import annotations
 
 from shared.contracts import (
     SCHEMA_VERSION,
-    PianoScore,
     Repeat,
     ScoreMetadata,
-    ScoreNote,
     ScoreSection,
     SectionLabel,
     TempoMapEntry,

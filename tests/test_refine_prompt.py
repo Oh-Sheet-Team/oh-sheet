@@ -6,7 +6,6 @@ from shared.contracts import (
     ScoreChordEvent,
     ScoreMetadata,
     ScoreNote,
-    SectionLabel,
     TempoMapEntry,
 )
 

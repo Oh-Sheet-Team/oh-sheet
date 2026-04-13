@@ -19,7 +19,6 @@ from shared.storage.local import LocalBlobStore
 from backend.config import settings
 from backend.services.refine import RefineService
 
-
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "refine" / "canned_claude_response.json"
 
 
