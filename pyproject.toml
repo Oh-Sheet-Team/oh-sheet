@@ -85,6 +85,7 @@ madmom = [
 # install-eval`` / the README docs still resolve to something
 # meaningful for reviewers who only want the scoring library.
 eval = [
+    "anthropic>=0.40",
     "mir_eval>=0.6.0",
 ]
 # Demucs source separation, used by TranscribeService when

@@ -16,7 +16,7 @@ FLUTTER      ?= flutter
 
 DART_DEFINE := $(if $(API_BASE_URL),--dart-define=API_BASE_URL=$(API_BASE_URL),)
 
-.PHONY: help install install-backend install-basic-pitch install-pop2piano install-demucs install-eval install-frontend backend frontend test test-backend test-e2e eval lint typecheck clean require-flutter require-port-free
+.PHONY: help install install-backend install-basic-pitch install-pop2piano install-demucs install-eval install-frontend backend frontend test test-backend test-e2e eval eval-refine lint typecheck clean require-flutter require-port-free
 
 help:
 	@echo "Oh Sheet — make targets"
@@ -38,6 +38,7 @@ help:
 	@echo "  make test               run backend pytest suite"
 	@echo "  make eval               score TranscribeService on the eval/fixtures/clean_midi subset"
 	@echo "                          (requires .[basic-pitch] + .[eval] + fluidsynth on PATH)"
+	@echo "  make eval-refine        score RefineService against the refine_golden set (requires OHSHEET_ANTHROPIC_API_KEY)"
 	@echo "  make lint               ruff + $(FLUTTER) analyze"
 	@echo "  make clean              remove build artifacts and the local blob store"
 
@@ -130,6 +131,14 @@ test-e2e:
 # See the script's module docstring for tuning / sampling options.
 eval:
 	python scripts/eval_transcription.py --out eval-baseline.json
+
+# Live refine eval. Runs the RefineService against
+# eval/fixtures/refine_golden/ using the real Anthropic API.
+# Costs real money; excluded from CI. Writes refine-baseline.json.
+# Requires OHSHEET_ANTHROPIC_API_KEY.
+eval-refine:
+	@test -n "$$OHSHEET_ANTHROPIC_API_KEY" || (echo "OHSHEET_ANTHROPIC_API_KEY not set" && exit 2)
+	python scripts/eval_refine.py --out refine-baseline.json
 
 lint:
 	ruff check backend tests
