@@ -1,0 +1,36 @@
+# Pre-commit hooks for oh-sheet.
+#
+# Enabled by Phase 1 (CFG-08). Scope today: secret scanning only. Additional
+# hooks (ruff, black, mypy) may be added in later phases.
+#
+# To install on a fresh clone:
+#   pre-commit install
+#
+# To run against the whole repo:
+#   pre-commit run --all-files
+#
+# The detect-secrets hook uses a committed baseline (.secrets.baseline) so
+# known-safe high-entropy strings are whitelisted. When legitimate high-entropy
+# content is added, regenerate with:
+#   detect-secrets scan --exclude-files '^tests/fixtures/' --baseline .secrets.baseline
+#
+# See .planning/phases/01-contracts-and-plumbing/01-CONTEXT.md §"Claude's Discretion"
+# for the choice of detect-secrets over gitleaks (Python-native, baseline-friendly).
+
+repos:
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args:
+          - "--baseline"
+          - ".secrets.baseline"
+        exclude: '^(tests/fixtures/|.*\.ipynb$|\.secrets\.baseline$)'
+        # Rationale for exclude:
+        # - tests/fixtures/: score JSONs contain high-entropy note-id/confidence
+        #   strings that trip entropy plugins but aren't secrets (D-02: these
+        #   fixtures must stay at schema_version=3.0.0 so regenerating them is
+        #   not an option).
+        # - *.ipynb: notebook output cells often contain hashed / hex strings
+        #   that look secret-ish but are artifacts of the kernel.
+        # - .secrets.baseline: avoid recursive scan of the baseline itself.
