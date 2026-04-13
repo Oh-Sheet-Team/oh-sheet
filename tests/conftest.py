@@ -12,6 +12,7 @@ import backend.workers.humanize  # noqa: F401
 
 # Import monolith worker modules so their tasks are registered on the celery_app.
 import backend.workers.ingest  # noqa: F401
+import backend.workers.refine  # noqa: F401
 import backend.workers.transcribe  # noqa: F401
 import backend.workers.transform  # noqa: F401
 from backend.api import deps
@@ -101,6 +102,19 @@ def disable_refine_in_settings(monkeypatch):
     in tests so jobs.py's PipelineConfig construction doesn't enable refine."""
     from backend.config import settings
     monkeypatch.setattr(settings, "refine_enabled", False)
+
+
+@pytest.fixture(autouse=True)
+def disable_real_refine_llm(monkeypatch):
+    """Null out the Anthropic API key for every test.
+
+    No test may hit the real API. The service's fallback path (no key →
+    raise → caught → pass-through with warning) is exactly what bare
+    pipeline tests need. Tests that want to exercise the merge logic
+    construct ``RefineService(..., client=fake)`` directly — that path
+    bypasses the key check entirely.
+    """
+    monkeypatch.setattr(settings, "anthropic_api_key", None)
 
 
 @pytest.fixture
