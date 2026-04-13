@@ -95,6 +95,14 @@ def default_enable_refine_false(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def disable_refine_in_settings(monkeypatch):
+    """Until Task 6 lands the refine worker, keep settings.refine_enabled=False
+    in tests so jobs.py's PipelineConfig construction doesn't enable refine."""
+    from backend.config import settings
+    monkeypatch.setattr(settings, "refine_enabled", False)
+
+
 @pytest.fixture
 def client():
     """TestClient inside a `with` block so the lifespan and ASGI portal stay alive

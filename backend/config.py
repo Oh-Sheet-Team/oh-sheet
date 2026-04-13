@@ -485,6 +485,17 @@ class Settings(BaseSettings):
     cover_search_enabled: bool = True
     cover_search_min_score: int = 60
 
+    # ---- Refine stage (LLM-driven score annotation) -------------------------
+    # The refine stage uses Anthropic Claude + the built-in web_search tool to
+    # produce human-readable score metadata (title, composer, key, tempo
+    # marking, section structure, repeats). See backend/services/refine.py.
+    refine_enabled: bool = True
+    refine_model: str = "claude-sonnet-4-6"
+    refine_max_searches: int = 5              # web_search cap per refinement
+    refine_budget_sec: int = 300              # overall wall-time budget
+    refine_call_timeout_sec: int = 120        # per-API-call timeout
+    anthropic_api_key: str | None = None      # required when refine_enabled
+
     @field_validator(
         "cleanup_energy_gate_floor_ratio",
         "cleanup_octave_amp_ratio",
