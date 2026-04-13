@@ -24,6 +24,8 @@ from backend.config import settings
 from backend.services.refine import RefinedEditOpList
 from tests.fakes.refine_client import FakeParseResponse, FakeRefineClient, FakeUsage
 
+_DUMMY_ANTHROPIC_KEY = "sk-ant-api03-dummy-key"  # pragma: allowlist secret
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -147,7 +149,7 @@ def test_refine_worker_happy_path_humanized(
     blob: LocalBlobStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """HumanizedPerformance envelope -> RefinedPerformance output + trace."""
-    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr("sk-ant-api03-dummy-key"))
+    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr(_DUMMY_ANTHROPIC_KEY))
     container = _install_fake_client(monkeypatch)
 
     from backend.workers.refine import run as refine_run
@@ -174,14 +176,14 @@ def test_refine_worker_happy_path_humanized(
     assert trace["prompt_version"] == "2026.04-v1"  # D-10 lock
     # Client was constructed with api_key argument
     assert "api_key" in container["constructed_with"]
-    assert container["constructed_with"]["api_key"] == "sk-ant-api03-dummy-key"
+    assert container["constructed_with"]["api_key"] == _DUMMY_ANTHROPIC_KEY
 
 
 def test_refine_worker_happy_path_piano_score(
     blob: LocalBlobStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """PianoScore envelope (sheet_only variant) -> RefinedPerformance with PianoScore inner."""
-    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr("sk-ant-api03-dummy-key"))
+    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr(_DUMMY_ANTHROPIC_KEY))
     _install_fake_client(monkeypatch)
 
     from backend.workers.refine import run as refine_run
@@ -204,7 +206,7 @@ def test_refine_worker_happy_path_piano_score(
 def test_refine_worker_unknown_payload_type_raises(
     blob: LocalBlobStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr("sk-ant-api03-dummy-key"))
+    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr(_DUMMY_ANTHROPIC_KEY))
     _install_fake_client(monkeypatch)
 
     from backend.workers.refine import run as refine_run
@@ -244,7 +246,7 @@ def test_refine_worker_calls_get_secret_value_exactly_once(
     blob: LocalBlobStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """CFG-03 / STG-03: single-site secret-access lock."""
-    real_secret = SecretStr("sk-ant-api03-dummy-key")
+    real_secret = SecretStr(_DUMMY_ANTHROPIC_KEY)
     # Wrap the SecretStr with a MagicMock that wraps .get_secret_value
     call_counter = {"count": 0}
     original_get = real_secret.get_secret_value
@@ -278,7 +280,7 @@ def test_refine_worker_calls_get_secret_value_exactly_once(
 def test_refine_worker_writes_both_blob_artifacts(
     blob: LocalBlobStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr("sk-ant-api03-dummy-key"))
+    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr(_DUMMY_ANTHROPIC_KEY))
     _install_fake_client(monkeypatch)
 
     from backend.workers.refine import run as refine_run
@@ -317,7 +319,7 @@ def test_refine_worker_exception_propagates(
 ) -> None:
     """Worker does NOT catch service exceptions — Plan 05 runner handles INT-03."""
     import anthropic
-    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr("sk-ant-api03-dummy-key"))
+    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr(_DUMMY_ANTHROPIC_KEY))
     exc = anthropic.RateLimitError(
         message="rate limited forever",
         response=_http_response(429),
