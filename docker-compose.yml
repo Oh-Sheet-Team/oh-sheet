@@ -23,6 +23,7 @@ services:
     volumes:
       - ./blob:/app/blob
       - ./backend:/app/backend
+      - ./shared:/app/shared
     depends_on:
       redis:
         condition: service_healthy
@@ -39,6 +40,7 @@ services:
     volumes:
       - ./blob:/app/blob
       - ./backend:/app/backend
+      - ./shared:/app/shared
     depends_on:
       redis:
         condition: service_healthy
@@ -55,6 +57,7 @@ services:
     volumes:
       - ./blob:/app/blob
       - ./backend:/app/backend
+      - ./shared:/app/shared
     depends_on:
       redis:
         condition: service_healthy
@@ -71,6 +74,7 @@ services:
     volumes:
       - ./blob:/app/blob
       - ./backend:/app/backend
+      - ./shared:/app/shared
     depends_on:
       redis:
         condition: service_healthy
@@ -87,6 +91,7 @@ services:
     volumes:
       - ./blob:/app/blob
       - ./backend:/app/backend
+      - ./shared:/app/shared
     depends_on:
       redis:
         condition: service_healthy
@@ -103,6 +108,7 @@ services:
     volumes:
       - ./blob:/app/blob
       - ./backend:/app/backend
+      - ./shared:/app/shared
     depends_on:
       redis:
         condition: service_healthy
