@@ -98,14 +98,32 @@ def test_create_job_202_when_enable_refine_false_plan_has_no_refine(
 
 
 # ---------------------------------------------------------------------------
-# V11 - CFG-04: 202 with enable_refine=true + key, plan INCLUDES refine
+# V11 (FLIPPED — gap closure 01-08, WR-01) — CFG-04:
+# 503 when enable_refine=true + key set + kill switch OFF.
+#
+# The original V11 (`test_create_job_202_when_enable_refine_true_plan_includes_refine`)
+# asserted 202 + refine in plan — the "happy path works" case. That assertion
+# no longer holds until Phase 2 ships the refine worker. Per VERIFICATION gap 1
+# (WR-01) the HTTP boundary now fast-fails with 503 so the runner never
+# receives a plan it cannot dispatch. The test below is the deliberate
+# amendment — rename + assertion flip from 202 to 503. Phase 2 will add a
+# NEW V-case asserting 202 + successful execution once the worker lands;
+# this 503 test stays as the regression guard against accidentally re-enabling
+# the submission path without a worker.
 # ---------------------------------------------------------------------------
 
 
-def test_create_job_202_when_enable_refine_true_plan_includes_refine(
+def test_create_job_503_when_enable_refine_true_and_key_set_without_kill_switch(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """CFG-04: enable_refine=true + key set + kill-switch off -> 202, plan has refine."""
+    """WR-01 gap closure: 503 when enable_refine=true + key set + kill switch OFF.
+
+    The runner has no `elif step == "refine"` branch (Phase 2 work); the
+    HTTP layer fast-fails at submission time so no job reaches the runner
+    with "refine" in its plan. Kill switch must be OFF for this path —
+    if it were ON, kill-switch coercion would flip effective_enable_refine
+    to False BEFORE the 503 gate evaluates. See the dominance test below.
+    """
     monkeypatch.setattr(settings, "anthropic_api_key", SecretStr("sk-ant-api03-dummy"))
     monkeypatch.setattr(settings, "refine_kill_switch", False)
 
@@ -113,13 +131,27 @@ def test_create_job_202_when_enable_refine_true_plan_includes_refine(
     body["enable_refine"] = True
 
     response = client.post("/v1/jobs", json=body)
-    assert response.status_code == 202, response.text
+    assert response.status_code == 503, response.text
 
-    job_id = response.json()["job_id"]
-    record = _get_job_record(job_id)
-    assert record is not None
-    assert record.config.enable_refine is True
-    assert "refine" in record.config.get_execution_plan()
+    detail = response.json().get("detail", "")
+    # Load-bearing substring assertions — the message must tell the operator
+    # (a) this is a Phase-2-pending gap, and (b) the way to unblock is to
+    # set enable_refine=false. If Phase 2 lands and this test still asserts
+    # 503, that's a signal to delete this test and add the Phase-2
+    # happy-path test in its place.
+    assert "refine stage not yet implemented" in detail, detail
+    assert "Phase 2 pending" in detail, detail
+    assert "enable_refine=false" in detail, detail
+
+    # No job record was created — the 503 raises BEFORE manager.submit().
+    # Confirm by probing: there should be no record whose enable_refine=True
+    # on this fresh (isolated_blob_root) manager.
+    from backend.api import deps
+    manager = deps.get_job_manager()
+    assert all(r.config.enable_refine is False for r in manager.list()), (
+        "503 must raise before manager.submit() — no record with enable_refine=True "
+        "should exist after this test."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -225,4 +257,75 @@ def test_kill_switch_does_not_log_when_enable_refine_false(
     assert kill_switch_records == [], (
         "kill switch must NOT log when enable_refine was already False - "
         f"spurious log would create noise: {[r.getMessage() for r in kill_switch_records]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Gap closure (01-08, WR-01) — Kill switch dominance over the 503 gate
+# ---------------------------------------------------------------------------
+
+
+def test_kill_switch_dominates_over_503_gate(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """WR-01 gap closure: kill_switch=true + enable_refine=true + key_set still returns 202.
+
+    Order of operations in create_job (load-bearing):
+      1. 400 gate: enable_refine=true AND key missing  -> raise 400
+      2. Kill-switch coercion: enable_refine=true AND kill_switch=true -> effective=False
+      3. 503 gate: effective_enable_refine=true         -> raise 503
+
+    Because step 2 runs BEFORE step 3, a request with kill switch ON
+    never reaches the 503 gate — kill switch dominates, coerces effective
+    enable_refine to False, and the job proceeds as if enable_refine=false.
+    This is load-bearing: it preserves V12/V13 exactly (kill switch is the
+    operator's global cost safety net; it must work even after WR-01 is
+    closed).
+
+    This test is the functional spec for the "kill switch dominates" rule.
+    """
+    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr("sk-ant-api03-dummy"))
+    monkeypatch.setattr(settings, "refine_kill_switch", True)
+    _enable_backend_log_capture(monkeypatch)
+
+    body = _audio_payload(settings.blob_root)
+    body["enable_refine"] = True  # operator opts in ...
+
+    with caplog.at_level(logging.WARNING, logger="backend.api.routes.jobs"):
+        response = client.post("/v1/jobs", json=body)
+
+    # ... but kill switch dominates: 202, not 503.
+    assert response.status_code == 202, (
+        "kill switch must dominate over the 503 gate — coercion runs FIRST, "
+        f"so effective_enable_refine=False by the time the 503 check evaluates. "
+        f"Got status {response.status_code}: {response.text}"
+    )
+
+    job_id = response.json()["job_id"]
+    record = _get_job_record(job_id)
+    assert record is not None
+    # Post-coercion stored config has enable_refine=False.
+    assert record.config.enable_refine is False, (
+        "kill switch must coerce the stored PipelineConfig.enable_refine to False "
+        "(not leak the request body's True into the runner)."
+    )
+    # And the execution plan omits refine entirely.
+    assert "refine" not in record.config.get_execution_plan()
+
+    # V13 invariant still holds on this path: exactly one kill-switch warning
+    # with the job_id substring.
+    kill_switch_records = [
+        r for r in caplog.records
+        if "refine kill switch active" in r.getMessage()
+    ]
+    assert len(kill_switch_records) == 1, (
+        f"expected exactly 1 kill-switch warning on the dominance path, "
+        f"got {len(kill_switch_records)}: "
+        f"{[r.getMessage() for r in kill_switch_records]}"
+    )
+    assert job_id in kill_switch_records[0].getMessage(), (
+        f"job_id {job_id} must appear in the warning so the dominance path "
+        f"is operator-diffable in structured logs."
     )
