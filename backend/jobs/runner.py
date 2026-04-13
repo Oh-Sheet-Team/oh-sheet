@@ -44,6 +44,14 @@ STEP_TO_TASK: dict[str, str] = {
     "condense": "condense.run",
     "transform": "transform.run",
     "humanize": "humanize.run",
+    # Phase 1 (CFG-01) reservation: "refine" is registered now so the
+    # runner dispatch chain is wired, but the matching Celery task
+    # (refine.run in backend/workers/refine.py) does NOT exist until
+    # Phase 2. No Phase 1 test path invokes this entry because
+    # PipelineConfig.get_execution_plan() only emits "refine" when
+    # enable_refine=True, and Phase 1 tests stop at the create_job /
+    # config boundary without running the full runner end-to-end.
+    "refine": "refine.run",
     "engrave": "engrave.run",
 }
 
