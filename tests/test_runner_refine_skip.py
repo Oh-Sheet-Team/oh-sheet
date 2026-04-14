@@ -393,3 +393,76 @@ async def test_runner_refine_skipped_passes_unrefined_score_to_engrave_sheet_onl
     assert result.pdf_uri is not None
     # Unrefined PianoScore flows to engrave
     assert probe["last_engrave_input"]["payload_type"] == "PianoScore"
+
+
+# ---------------------------------------------------------------------------
+# D-24 / D-25 / D-27: RefinePauseTurnError flows through existing skip branch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_runner_refine_skip_pause_turn_counter(
+    blob: LocalBlobStore, runner: PipelineRunner, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """D-25, D-27: RefinePauseTurnError raised from refine.run → runner emits
+    stage_completed with message='refine_skipped: refinepauseturnerror' AND
+    the refine_skip_total log line reports reason=refinepauseturnerror AND
+    engrave runs on the UNREFINED HumanizedPerformance payload.
+
+    Proves the pause_turn subclass flows through the Phase-2 try/except via
+    type(exc).__name__.lower() without any change to the runner.
+    """
+    from backend.services.refine import RefinePauseTurnError
+
+    probe = _install_refine_stub(
+        blob, monkeypatch,
+        raises=RefinePauseTurnError(
+            "pause_turn raised from test refine stub",
+            anthropic_message_id="msg_pause_runner_001",
+        ),
+    )
+    # Ensure backend.* log records are seen by caplog.
+    backend_logger = logging.getLogger("backend")
+    monkeypatch.setattr(backend_logger, "propagate", True)
+
+    events: list[JobEvent] = []
+    bundle = _audio_bundle(blob)
+
+    config = PipelineConfig(variant="audio_upload", enable_refine=True)
+    with caplog.at_level(logging.INFO, logger="backend.jobs.runner"):
+        result = await runner.run(
+            job_id="test-refine-pause-turn", bundle=bundle, config=config,
+            on_event=events.append,
+        )
+
+    # INT-04 preserved: job produces an EngravedOutput.
+    assert result.pdf_uri is not None
+
+    # INT-03: stage_completed with pause_turn-specific skip message.
+    refine_completions = [
+        e for e in events
+        if e.stage == "refine" and e.type == "stage_completed"
+    ]
+    assert len(refine_completions) == 1
+    # D-25 literal: the grep-friendly lowercase class name.
+    assert refine_completions[0].message == "refine_skipped: refinepauseturnerror"
+
+    # NEVER stage_failed on pause_turn.
+    refine_failures = [
+        e for e in events if e.stage == "refine" and e.type == "stage_failed"
+    ]
+    assert refine_failures == []
+
+    # Structured counter log line: reason=refinepauseturnerror.
+    counter_records = [
+        r for r in caplog.records
+        if "refine_skip_total" in r.getMessage()
+    ]
+    assert len(counter_records) == 1
+    counter_msg = counter_records[0].getMessage()
+    assert "reason=refinepauseturnerror" in counter_msg
+    assert "job_id=test-refine-pause-turn" in counter_msg
+
+    # INT-02: engrave ran against the UNREFINED HumanizedPerformance payload.
+    assert probe["last_engrave_input"]["payload_type"] == "HumanizedPerformance"
