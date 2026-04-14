@@ -398,15 +398,24 @@ def test_l2_grand_staff_two_parts_braced(engraved_artifacts):
     # Clef sanity: part 1 = treble (G on line 2), part 2 = bass (F on line 4).
     def clef_of(part_elem) -> tuple[str, str]:
         clef = part_elem.find("measure/attributes/clef")
-        assert clef is not None
+        assert clef is not None, (
+            "no <clef> in first measure of part — "
+            "xpath 'measure/attributes/clef' found nothing"
+        )
         return (clef.findtext("sign") or "", clef.findtext("line") or "")
 
     assert clef_of(parts[0]) == ("G", "2"), f"RH clef: {clef_of(parts[0])}"
     assert clef_of(parts[1]) == ("F", "4"), f"LH clef: {clef_of(parts[1])}"
 
     # 12 RH notes on part 1, 8 LH notes on part 2 (same counts as before).
-    assert _count_part_notes(musicxml, 0) == 12
-    assert _count_part_notes(musicxml, 1) == 8
+    rh_count = _count_part_notes(musicxml, 0)
+    lh_count = _count_part_notes(musicxml, 1)
+    assert rh_count == 12, (
+        f"RH part (index 0) has {rh_count} pitched notes, expected 12"
+    )
+    assert lh_count == 8, (
+        f"LH part (index 1) has {lh_count} pitched notes, expected 8"
+    )
 
 
 def test_l2_two_voices_preserved_on_same_staff(engraved_artifacts):
