@@ -78,6 +78,35 @@ class RefineLLMError(Exception):
     """
 
 
+class RefinePauseTurnError(RefineLLMError):
+    """Raised when Anthropic returns stop_reason == "pause_turn" (D-24, D-25).
+
+    Subclass of RefineLLMError so:
+      1. Legacy callers using `except RefineLLMError` still catch it.
+      2. Tests can assert isinstance(exc, RefinePauseTurnError) specifically.
+      3. The Phase-2 runner skip-counter reads
+         `type(exc).__name__.lower() == "refinepauseturnerror"` — grep-friendly
+         in ops logs (no underscores, one token).
+      4. Future code can add pause-specific handling without string-matching
+         on the error message.
+
+    Carries `stop_reason` + `anthropic_message_id` for diagnostic context.
+    NOT added to `_RETRYABLE_EXC` (D-26) — pause_turn is a terminal skip,
+    never retried.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stop_reason: str = "pause_turn",
+        anthropic_message_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.stop_reason = stop_reason
+        self.anthropic_message_id = anthropic_message_id
+
+
 # ---------------------------------------------------------------------------
 # Structured output schema (Pitfall #4 — flat edit list, NOT nested score)
 # ---------------------------------------------------------------------------
@@ -176,8 +205,20 @@ class RefineService:
 
         response = await self._call_llm(prompt)
 
+        if response.stop_reason == "pause_turn":
+            # D-24, D-25: pause_turn is a distinct, grep-friendly, non-retryable
+            # skip. Subclass of RefineLLMError so the Phase-2 skip branch in
+            # PipelineRunner still catches it, but type(exc).__name__.lower()
+            # now reads 'refinepauseturnerror' instead of the generic name.
+            # D-26: NOT added to _RETRYABLE_EXC — this is terminal, never retried.
+            raise RefinePauseTurnError(
+                f"Anthropic returned stop_reason='pause_turn' — treating as skip "
+                f"(D-24). Response id: {getattr(response, 'id', 'unknown')!r}",
+                stop_reason="pause_turn",
+                anthropic_message_id=getattr(response, "id", None),
+            )
         if response.stop_reason != "end_turn":
-            # STG-08: never auto-resume pause_turn; any non-end_turn is failure.
+            # STG-08: any other non-end_turn stop_reason is failure.
             raise RefineLLMError(
                 f"unexpected stop_reason from Anthropic: {response.stop_reason!r} "
                 f"(expected 'end_turn')"
