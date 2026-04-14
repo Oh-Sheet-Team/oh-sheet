@@ -154,6 +154,9 @@ testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
 addopts = "--cov=backend --cov-report=term-missing --cov-report=xml"
 asyncio_mode = "auto"
+markers = [
+    "live_anthropic: live Anthropic API tests (D-16; opt-in via OHSHEET_RUN_INTEGRATION_TESTS=1; never runs in CI)",
+]
 
 [tool.ruff]
 target-version = "py311"

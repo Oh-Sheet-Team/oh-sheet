@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,47 @@ from backend.config import settings
 from backend.main import create_app
 from backend.services import transcribe as transcribe_module
 from backend.workers.celery_app import celery_app as _celery_app
+
+
+# ---------------------------------------------------------------------------
+# D-16, D-17, D-18: live_anthropic marker gating + fixture-capture CLI flag
+# ---------------------------------------------------------------------------
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """D-18: --record-live-fixtures enables one-time fixture capture during
+    a live test run. Without this flag the live test asserts shape-invariants
+    against the previously-captured tests/fixtures/refine/live_sample_v1.json.
+    Opt-in; NEVER the CI default.
+    """
+    parser.addoption(
+        "--record-live-fixtures",
+        action="store_true",
+        default=False,
+        help="Capture live Anthropic responses into tests/fixtures/refine/ "
+             "on first successful run. Opt-in; never the CI default.",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """D-16, D-17: skip @pytest.mark.live_anthropic unless
+    OHSHEET_RUN_INTEGRATION_TESTS=1 is set.
+
+    Default-absent so CI and normal dev runs never hit the network. Dev
+    machine runs live tests with:
+        OHSHEET_RUN_INTEGRATION_TESTS=1 pytest -m live_anthropic
+    """
+    if os.environ.get("OHSHEET_RUN_INTEGRATION_TESTS") == "1":
+        return
+    skip = pytest.mark.skip(
+        reason="live_anthropic marker skipped: "
+               "set OHSHEET_RUN_INTEGRATION_TESTS=1 to run"
+    )
+    for item in items:
+        if "live_anthropic" in item.keywords:
+            item.add_marker(skip)
 
 
 @pytest.fixture(autouse=True)
