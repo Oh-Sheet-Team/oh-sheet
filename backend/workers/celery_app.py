@@ -22,6 +22,10 @@ celery_app.conf.update(
         "condense.run": {"queue": "arrange"},
         "transform.run": {"queue": "arrange"},
         "humanize.run": {"queue": "humanize"},
+        # WR-03: route refine.run to its dedicated queue so operators who run
+        # `celery -Q refine` actually receive refine tasks instead of them
+        # silently falling through to the default queue.
+        "refine.run": {"queue": "refine"},
         "engrave.run": {"queue": "engrave"},
     },
 )
