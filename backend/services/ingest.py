@@ -170,11 +170,25 @@ def _maybe_swap_for_cover_sync(url: str) -> str:
         log.info("ingest: cover_search could not probe metadata for %r", url)
         return url
 
-    title, artist = probed
+    raw_title, yt_uploader = probed
+    # YouTube uploaders (e.g. "Too Much Music") are NOT the real artist.
+    # Many video titles embed the artist: "Artist - Song Title". Split on
+    # " - " to extract the real artist for cover search matching.
+    # If no separator, pass the full title with no artist — cover search
+    # uses the title as the yt-dlp search query, which often works.
+    if " - " in raw_title:
+        parts = raw_title.split(" - ", 1)
+        artist = parts[0].strip()
+        title = parts[1].strip()
+    else:
+        # No separator — pass full title as-is. Cover search appends
+        # "piano cover" to build the YouTube query.
+        title = raw_title
+        artist = None
     try:
         match = find_clean_source(
-            title,
-            artist,
+            title.lower(),
+            artist.lower() if artist else None,
             min_score=settings.cover_search_min_score,
         )
     except Exception as exc:  # noqa: BLE001 — defensive depth; find_clean_source
