@@ -252,7 +252,22 @@ class RefineService:
                         output_format=RefinedEditOpList,
                     )
         except RetryError as exc:  # pragma: no cover — reraise=True unwraps; belt-and-braces.
-            raise exc.last_attempt.exception() from exc
+            # WR-05: Future.exception() returns None when the future completed
+            # successfully. `raise None` would raise a confusing TypeError and
+            # hide the actual state drift. Guard explicitly so we either
+            # reraise the real underlying exception or surface the tenacity
+            # inconsistency with a clear message.
+            last_exc = (
+                exc.last_attempt.exception()
+                if exc.last_attempt.failed
+                else None
+            )
+            if last_exc is not None:
+                raise last_exc from exc
+            raise RuntimeError(
+                "RetryError raised but last_attempt did not fail — "
+                "tenacity internal state inconsistency",
+            ) from exc
         # Unreachable — AsyncRetrying with reraise=True either returns from `with attempt`
         # or propagates. Explicit guard for type-checker sanity.
         raise RuntimeError("AsyncRetrying exited without value or exception")
