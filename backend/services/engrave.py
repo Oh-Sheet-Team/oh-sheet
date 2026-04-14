@@ -624,22 +624,27 @@ def _render_musicxml_bytes(
         for a in perf.expression.articulations:
             articulations_at[a.score_note_id] = a.type
 
-    # Render as a real piano grand staff: two ``PartStaff`` objects bound
-    # by a braced ``StaffGroup``. music21 emits this as a single
-    # ``<part>`` with ``<staves>2</staves>`` and staff-tagged notes —
-    # exactly what OSMD / LilyPond / MuseScore expect for piano. Previous
-    # behavior emitted two separate ``<part>``s ("Right Hand", "Left
-    # Hand") which renderers drew as two stacked instruments without a
-    # connecting brace. Both PartStaffs share ``partName="Piano"`` so the
-    # merged ``<score-part>`` gets the correct "Piano" label.
+    # Render as a real piano grand staff: two ``Part`` objects bound by a
+    # braced ``StaffGroup``. music21 emits this as two separate
+    # ``<part>`` elements joined in ``<part-list>`` by a ``<part-group>``
+    # with ``<group-symbol>brace</group-symbol>`` — the canonical
+    # MusicXML grand-staff idiom that ``musicxml2ly`` / LilyPond, OSMD,
+    # MuseScore, and Verovio all render identically. The older
+    # ``PartStaff`` path emitted one merged ``<part>`` with
+    # ``<staves>2</staves>`` and per-note ``<staff>`` tags, which
+    # ``musicxml2ly`` mishandled: the LH clef was dropped and both staves
+    # rendered in treble. The ``StaffGroup`` name "Piano" sits on the
+    # brace; the individual ``<part>`` elements have empty
+    # ``<part-name/>`` tags, so renderers show a single "Piano" label.
     piano_parts: list = []
-    for hand_name, notes, clef in (
-        ("Right Hand", score.right_hand, music21.clef.TrebleClef()),
-        ("Left Hand", score.left_hand, music21.clef.BassClef()),
+    for hand_name, notes, clef, part_id in (
+        ("Right Hand", score.right_hand, music21.clef.TrebleClef(), "P-RH"),
+        ("Left Hand", score.left_hand, music21.clef.BassClef(), "P-LH"),
     ):
-        part = music21.stream.PartStaff()
-        part.partName = "Piano"
-        part.partAbbreviation = "Pno."
+        part = music21.stream.Part(id=part_id)
+        # Intentionally no partName / partAbbreviation. The StaffGroup
+        # owns the "Piano" / "Pno." label; per-part names would render
+        # twice (once per staff) in some tools.
         part.append(ts)
         part.append(ks)
         if hand_name == "Right Hand":
@@ -773,11 +778,12 @@ def _render_musicxml_bytes(
         s.insert(0, part)
         piano_parts.append(part)
 
-    # Bind the two PartStaffs into a braced grand staff. music21 detects
-    # the StaffGroup and collapses them into one ``<part>`` with
-    # ``<staves>2</staves>`` in the MusicXML output, with each note
-    # carrying a ``<staff>`` tag so renderers place it on the correct
-    # stave.
+    # Bind the two Parts into a braced grand staff. music21 emits this
+    # as a ``<part-group type="start"><group-symbol>brace</group-symbol>
+    # </part-group>`` wrapper in ``<part-list>``, followed by two
+    # ``<part>`` elements — one for RH, one for LH. No ``<staves>`` tag,
+    # no per-note ``<staff>`` tag; clef lives in each part's own
+    # measure-1 ``<attributes>`` block.
     s.insert(
         0,
         music21.layout.StaffGroup(

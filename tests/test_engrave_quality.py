@@ -629,18 +629,21 @@ def test_l2_bar_crossing_note_in_voice_is_split_with_tie():
 
     root = etree.fromstring(musicxml)
     parts = root.findall("part")
-    assert len(parts) == 1, "engrave should emit a single grand-staff <part>"
+    assert len(parts) == 2, f"expected two parts (RH + LH), got {len(parts)}"
+    # This test operates on the LH part (bar-crossing notes are in LH in
+    # this fixture). parts[0] is RH, parts[1] is LH under two-part encoding.
+    lh_part = parts[1]
 
     # Pull the divisions + time signature from the first measure's
     # <attributes> block so this test stays honest if we change defaults.
-    first_attrs = parts[0].find("measure/attributes")
+    first_attrs = lh_part.find("measure/attributes")
     divisions = int(first_attrs.findtext("divisions"))
     beats = int(first_attrs.find("time").findtext("beats"))
     beat_type = int(first_attrs.find("time").findtext("beat-type"))
     expected_per_measure = divisions * 4 * beats // beat_type
 
     overflows: list[tuple[str, int, int]] = []
-    for measure in parts[0].findall("measure"):
+    for measure in lh_part.findall("measure"):
         # Walk the measure top-to-bottom tracking a per-voice cursor.
         # Each voice's duration in the measure is the max cursor it
         # reaches before the terminating ``<backup>`` (or end-of-measure).
@@ -745,34 +748,39 @@ def test_l2_ties_do_not_cross_voices():
     root = etree.fromstring(musicxml)
     # Walk every tie and confirm each (pitch, voice, staff) start has
     # a matching stop — no orphans, no doubles, no unclosed chains.
-    open_ties: dict[tuple, str] = {}
+    # Tie-chain tracking scoped per <part>. Under two-part encoding the
+    # old (pitch, voice, staff) tuple degenerates because <staff> tags
+    # are absent — scope the open_ties dict per <part> so RH and LH
+    # tie chains are tracked independently.
     issues: list[tuple[str, str, tuple]] = []
-    for measure in root.find("part").findall("measure"):
-        mnum = measure.get("number")
-        for n in measure.findall("note"):
-            pitch = n.find("pitch")
-            if pitch is None:
-                continue
-            key = (
-                pitch.findtext("step"),
-                pitch.findtext("octave"),
-                pitch.findtext("alter") or "0",
-                n.findtext("voice") or "1",
-                n.findtext("staff") or "1",
-            )
-            for tie in n.findall("tie"):
-                typ = tie.get("type")
-                if typ == "start":
-                    if key in open_ties:
-                        issues.append(("double-start", mnum, key))
-                    open_ties[key] = mnum
-                elif typ == "stop":
-                    if key not in open_ties:
-                        issues.append(("orphan-stop", mnum, key))
-                    else:
-                        del open_ties[key]
-    for key, mnum in open_ties.items():
-        issues.append(("unclosed-start", mnum, key))
+    for part in root.findall("part"):
+        open_ties: dict[tuple, str] = {}  # reset per part
+        for measure in part.findall("measure"):
+            mnum = measure.get("number")
+            for n in measure.findall("note"):
+                pitch = n.find("pitch")
+                if pitch is None:
+                    continue
+                key = (
+                    pitch.findtext("step"),
+                    pitch.findtext("octave"),
+                    pitch.findtext("alter") or "0",
+                    n.findtext("voice") or "1",
+                    n.findtext("staff") or "1",
+                )
+                for tie in n.findall("tie"):
+                    typ = tie.get("type")
+                    if typ == "start":
+                        if key in open_ties:
+                            issues.append(("double-start", mnum, key))
+                        open_ties[key] = mnum
+                    elif typ == "stop":
+                        if key not in open_ties:
+                            issues.append(("orphan-stop", mnum, key))
+                        else:
+                            del open_ties[key]
+        for key, mnum in open_ties.items():
+            issues.append(("unclosed-start", mnum, key))
 
     assert not issues, (
         f"tie chain issues — MuseScore will flag this as corrupt: {issues}"
