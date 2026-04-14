@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from fractions import Fraction
 from pathlib import Path
 
 from shared.musescore_cli import musescore_executable_paths
@@ -175,6 +176,27 @@ _PITCH_OCTAVE_RE = re.compile(r"^[A-G][#b]?\d+$")
 # mis-labeling rather than a confused analyzer. Below this we trust
 # the declared key and skip the override.
 _KEY_OVERRIDE_MIN_CORRELATION = 0.80
+
+
+# Export divisions per quarter — matches the ``divisionsPerQuarter=12``
+# we force on the music21 exporter below. LCM(3, 4) covers 16ths
+# (3/12 qL) and 8th-note triplets (4/12 qL), the finest grids arrange
+# emits. Every note onset and duration is snapped to this grid before
+# handoff so float drift from decimal-approximated grids (e.g. arrange's
+# ``0.167`` for 1/6) can't leave a sub-1/12 residual after ``makeNotation``
+# splits notes at barlines. Such residuals map to music21 types like
+# ``2048th`` / ``inexpressible`` that the MusicXML exporter rejects.
+# ``Fraction`` is essential here — rounding a float to 1/12 still yields
+# an inexact binary (e.g. ``23/6`` → ``3.8333333333333335``), and the drift
+# is exactly what reopens the barline-split bug. music21 consumes Fractions
+# as exact rationals.
+_EXPORT_DIVISIONS = 12
+_MIN_SNAPPED_QL = Fraction(1, _EXPORT_DIVISIONS)
+
+
+def _snap_quarter(qL: float) -> Fraction:
+    """Snap a quarterLength to the export grid as an exact ``Fraction``."""
+    return Fraction(round(qL * _EXPORT_DIVISIONS), _EXPORT_DIVISIONS)
 
 
 def _resolve_key_signature(score: PianoScore, music21) -> tuple[str, str, bool]:  # noqa: ANN001
@@ -654,8 +676,14 @@ def _render_musicxml_bytes(
 
         notes_by_voice: dict[int, list] = {}
         for sn, tie_in, tie_out in sorted(split, key=lambda row: row[0].onset_beat):
+            # Snap onset / duration to the export grid so a note's end
+            # lands exactly on a division boundary — otherwise a barline
+            # split inside ``makeNotation`` can leave a sub-1/12-qL residual
+            # that the MusicXML exporter rejects as '2048th' / 'inexpressible'.
+            onset = max(0.0, _snap_quarter(sn.onset_beat))
+            dur = max(_snap_quarter(sn.duration_beat), _MIN_SNAPPED_QL)
             n = music21.note.Note(sn.pitch)
-            n.quarterLength = sn.duration_beat
+            n.quarterLength = dur
             n.volume.velocity = sn.velocity
             art_type = articulations_at.get(sn.id)
             if art_type == "staccato":
@@ -677,7 +705,7 @@ def _render_musicxml_bytes(
             elif tie_out:
                 n.tie = music21.tie.Tie("start")
             voice_num = sn.voice if use_explicit_voices else 1
-            notes_by_voice.setdefault(voice_num, []).append((sn.onset_beat, n))
+            notes_by_voice.setdefault(voice_num, []).append((onset, n))
 
         if use_explicit_voices:
             # Insert voice 1 before voice 2 so music21's internal
