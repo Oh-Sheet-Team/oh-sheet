@@ -21,6 +21,7 @@ from backend.config import settings
 from backend.contracts import (
     SCHEMA_VERSION,
     EngravedOutput,
+    EngravedScoreData,
     HarmonicAnalysis,
     InputBundle,
     InstrumentRole,
@@ -238,7 +239,6 @@ class PipelineRunner:
         score_dict: dict | None = None
         perf_dict: dict | None = None
         result_dict: dict | None = None
-        tunechat_task: asyncio.Task | None = None
 
         log.info(
             "pipeline start job_id=%s variant=%s plan=%s skip_humanizer=%s source=%s "
@@ -291,22 +291,56 @@ class PipelineRunner:
                         }),
                     })
 
-                    # Fire TuneChat request in parallel — runs alongside
-                    # Oh Sheet's own pipeline stages. We await the result
-                    # after the pipeline finishes.
-                    tunechat_task = None
+                    # For title_lookup jobs (YouTube URL / song title search),
+                    # delegate entirely to TuneChat when enabled. TuneChat
+                    # uses tcalgo + MuseScore which produces much cleaner
+                    # scores than Basic Pitch + music21. Skip the remaining
+                    # Oh Sheet pipeline stages and return TuneChat's result.
                     if settings.tunechat_enabled:
                         audio_data = current_payload.get("audio")
-                        if audio_data and audio_data.get("uri"):
+                        is_title_job = bundle.metadata.source == "title_lookup"
+
+                        if is_title_job and audio_data and audio_data.get("uri"):
+                            # TuneChat-only path: send audio, await result,
+                            # return minimal EngravedOutput with TuneChat fields.
                             try:
                                 from backend.services.tunechat_client import transcribe_via_tunechat
                                 audio_bytes = self.blob_store.get_bytes(audio_data["uri"])
-                                tunechat_task = asyncio.create_task(
-                                    transcribe_via_tunechat(audio_bytes, "audio.wav"),
-                                )
-                                log.info("tunechat: request fired in parallel for job_id=%s", job_id)
+                                emit("ingest", "stage_completed", progress=0.25)
+                                emit("transcribe", "stage_started", progress=0.25)
+                                log.info("tunechat-only: sending audio for job_id=%s", job_id)
+                                tc_result = await transcribe_via_tunechat(audio_bytes, "audio.wav", title=title, artist=composer)
+                                if tc_result is not None:
+                                    emit("transcribe", "stage_completed", progress=0.75)
+                                    emit("engrave", "stage_started", progress=0.75)
+                                    emit("engrave", "stage_completed", progress=1.0)
+                                    log.info(
+                                        "tunechat-only: success job_id=%s tc_job_id=%s",
+                                        job_id, tc_result.job_id,
+                                    )
+                                    return EngravedOutput(
+                                        metadata=EngravedScoreData(
+                                            includes_dynamics=False,
+                                            includes_pedal_marks=False,
+                                            includes_fingering=False,
+                                            includes_chord_symbols=False,
+                                            title=title,
+                                            composer=composer,
+                                        ),
+                                        pdf_uri="",
+                                        musicxml_uri="",
+                                        humanized_midi_uri="",
+                                        tunechat_job_id=tc_result.job_id,
+                                        tunechat_preview_image_url=tc_result.preview_image_url,
+                                    )
+                                else:
+                                    log.warning("tunechat-only: returned None, falling back to Oh Sheet pipeline")
                             except Exception as exc:  # noqa: BLE001
-                                log.warning("tunechat: failed to start request: %s", exc)
+                                log.warning("tunechat-only: failed (%s), falling back to Oh Sheet pipeline", exc)
+
+                        # Audio/MIDI uploads use Oh Sheet's own pipeline
+                        # (Basic Pitch + music21). TuneChat is not fired for
+                        # these routes — only for title_lookup jobs above.
 
                 elif step == "transcribe":
                     payload_uri = self._serialize_stage_input(job_id, step, current_payload)
@@ -397,23 +431,5 @@ class PipelineRunner:
                 update={"transcription_midi_uri": txr_dict["transcription_midi_uri"]},
             )
         # Await the parallel TuneChat request (if it was fired).
-        # The variable tunechat_task is set inside the ingest step above.
-        # If it doesn't exist (no ingest step, or tunechat disabled),
-        # we skip this block entirely.
-        try:
-            if tunechat_task is not None:
-                tc_result = await tunechat_task
-                if tc_result is not None:
-                    result = result.model_copy(update={
-                        "tunechat_job_id": tc_result.job_id,
-                        "tunechat_preview_image_url": tc_result.preview_image_url,
-                    })
-                    log.info(
-                        "tunechat: attached to result job_id=%s tc_job_id=%s",
-                        job_id, tc_result.job_id,
-                    )
-        except Exception as exc:  # noqa: BLE001
-            log.warning("tunechat: failed to attach result: %s", exc)
-
         log.info("pipeline finished job_id=%s", job_id)
         return result
