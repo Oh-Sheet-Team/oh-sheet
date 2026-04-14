@@ -19,7 +19,7 @@ from backend.workers.celery_app import celery_app
 async def test_engrave_prefers_refined_title_over_bundle(monkeypatch):
     """When refine populates ScoreMetadata.title, engrave uses it even if
     InputMetadata.title was supplied by the user."""
-    async def _canned_refine(self, payload, *, title_hint=None, artist_hint=None):
+    async def _canned_refine(self, payload, *, title_hint=None, artist_hint=None, filename_hint=None):
         # Merge in known refined values.
         return self._merge(payload, {
             "title": "Canonical Title",

@@ -113,6 +113,26 @@ def test_build_user_prompt_handles_missing_hints() -> None:
     assert "None" in prompt or "null" in prompt.lower()
 
 
+def test_build_user_prompt_includes_filename_hint() -> None:
+    score = _score_fixture()
+    prompt = build_user_prompt(
+        title_hint=None,
+        artist_hint=None,
+        filename_hint="my-heart-will-go-on.mid",
+        score=score,
+    )
+    assert "my-heart-will-go-on.mid" in prompt
+
+
+def test_system_prompt_requires_heuristic_fallback() -> None:
+    # Must instruct the model to ALWAYS call submit_refinements with
+    # common-sense defaults when the song cannot be identified.
+    assert "submit_refinements" in SYSTEM_PROMPT
+    assert "tempo_marking" in SYSTEM_PROMPT
+    assert "staff_split_hint" in SYSTEM_PROMPT
+    assert "filename" in SYSTEM_PROMPT.lower()
+
+
 def test_submit_refinements_tool_schema_shape() -> None:
     schema = submit_refinements_tool_schema()
     assert schema["name"] == "submit_refinements"

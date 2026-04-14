@@ -116,9 +116,15 @@ async def create_job(
     # Build InputMetadata once — prefer_clean_source is threaded through
     # every variant so uploads can theoretically opt in too (the ingest
     # stage just ignores it when audio is already present).
+    source_filename = None
+    if body.audio is not None:
+        source_filename = body.audio.source_filename
+    elif body.midi is not None:
+        source_filename = body.midi.source_filename
     metadata_kwargs = {
         "title": body.title,
         "artist": body.artist,
+        "source_filename": source_filename,
         "prefer_clean_source": body.prefer_clean_source,
     }
 

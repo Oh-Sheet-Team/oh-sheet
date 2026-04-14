@@ -46,12 +46,14 @@ class RemoteAudioFile(BaseModel):
     duration_sec: float
     channels: int
     content_hash: str | None = None
+    source_filename: str | None = None
 
 
 class RemoteMidiFile(BaseModel):
     uri: str
     ticks_per_beat: int
     content_hash: str | None = None
+    source_filename: str | None = None
 
 
 class SectionLabel(str, Enum):
@@ -129,6 +131,7 @@ class InputMetadata(BaseModel):
     title: str | None = None
     artist: str | None = None
     source: Literal["title_lookup", "audio_upload", "midi_upload"]
+    source_filename: str | None = None
     # When True, the ingest stage will attempt to find a clean piano
     # cover of the song (via yt-dlp search + scoring) and swap the
     # user's URL for the cover's URL before transcription. See

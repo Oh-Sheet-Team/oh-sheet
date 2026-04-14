@@ -67,10 +67,11 @@ class RefineService:
         *,
         title_hint: str | None = None,
         artist_hint: str | None = None,
+        filename_hint: str | None = None,
     ) -> HumanizedPerformance | PianoScore:
         log.info(
-            "refine: start title_hint=%r artist_hint=%r humanized=%s",
-            title_hint, artist_hint, isinstance(payload, HumanizedPerformance),
+            "refine: start title_hint=%r artist_hint=%r filename_hint=%r humanized=%s",
+            title_hint, artist_hint, filename_hint, isinstance(payload, HumanizedPerformance),
         )
 
         cache_key = self._cache_key(payload)
@@ -82,7 +83,7 @@ class RefineService:
         score = payload.score if isinstance(payload, HumanizedPerformance) else payload
         try:
             refinements = await asyncio.wait_for(
-                self._call_llm(score, title_hint, artist_hint),
+                self._call_llm(score, title_hint, artist_hint, filename_hint),
                 timeout=settings.refine_budget_sec,
             )
         except TimeoutError:
@@ -134,10 +135,12 @@ class RefineService:
         score: PianoScore,
         title_hint: str | None,
         artist_hint: str | None,
+        filename_hint: str | None,
     ) -> dict[str, Any] | None:
         user_prompt = build_user_prompt(
             title_hint=title_hint,
             artist_hint=artist_hint,
+            filename_hint=filename_hint,
             score=score,
         )
         tools = [

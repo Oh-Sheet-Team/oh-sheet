@@ -311,6 +311,7 @@ class PipelineRunner:
                             "payload_type": "HumanizedPerformance",
                             "title_hint": bundle.metadata.title,
                             "artist_hint": bundle.metadata.artist,
+                            "filename_hint": bundle.metadata.source_filename,
                         }
                     elif score_dict is not None:
                         refine_envelope = {
@@ -318,6 +319,7 @@ class PipelineRunner:
                             "payload_type": "PianoScore",
                             "title_hint": bundle.metadata.title,
                             "artist_hint": bundle.metadata.artist,
+                            "filename_hint": bundle.metadata.source_filename,
                         }
                     else:
                         raise RuntimeError(

@@ -8,6 +8,7 @@ can hydrate the right Pydantic model:
         "payload": <model JSON>,
         "title_hint": str | None,
         "artist_hint": str | None,
+        "filename_hint": str | None,
     }
 
 The output envelope mirrors the input shape, so the runner can unwrap
@@ -32,6 +33,7 @@ def run(job_id: str, payload_uri: str) -> str:
     payload_data = raw["payload"]
     title_hint = raw.get("title_hint")
     artist_hint = raw.get("artist_hint")
+    filename_hint = raw.get("filename_hint")
 
     if payload_type == "HumanizedPerformance":
         payload = HumanizedPerformance.model_validate(payload_data)
@@ -46,7 +48,12 @@ def run(job_id: str, payload_uri: str) -> str:
     service = RefineService(blob_store=blob)
     # asyncio.run() is safe with Celery's default prefork pool; breaks with gevent/eventlet.
     result = asyncio.run(
-        service.run(payload, title_hint=title_hint, artist_hint=artist_hint),
+        service.run(
+            payload,
+            title_hint=title_hint,
+            artist_hint=artist_hint,
+            filename_hint=filename_hint,
+        ),
     )
 
     out = {

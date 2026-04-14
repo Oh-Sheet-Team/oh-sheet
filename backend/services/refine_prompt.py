@@ -17,7 +17,7 @@ from shared.contracts import (
 )
 
 # Bumping this invalidates the refine cache. See backend/services/refine.py.
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 SYSTEM_PROMPT = (
     "You are a music editor refining an automatically-generated piano "
@@ -25,13 +25,27 @@ SYSTEM_PROMPT = (
     "canonical key signature, form, section structure, and tempo marking. "
     "Then call submit_refinements exactly once with your conclusions.\n\n"
     "Rules:\n"
-    " * Only submit values you can justify from your research. Omit any "
-    "field you are not confident about — omitted fields fall back to the "
-    "automatic detection.\n"
+    " * Only submit song-specific values (title, composer, arranger, "
+    "section/repeat structure) when you can justify them from your research. "
+    "Omit song-specific fields you are not confident about.\n"
     " * Do NOT invent note data. You are only editing metadata.\n"
     " * Prefer canonical published key signatures over the detected key "
     "when they disagree.\n"
     " * Section boundaries should align with the chord sketch when possible.\n"
+    " * You MUST ALWAYS call submit_refinements — never return an empty or "
+    "missing call. If title/artist/filename + web_search do not let you "
+    "identify the song, fall back to common-sense music-editing defaults "
+    "derived from the detected data:\n"
+    "     - Set tempo_marking from the detected BPM: Largo (≤60), "
+    "Adagio (~66), Andante (~76), Moderato (~108), Allegro (~120), "
+    "Vivace (~140), Presto (≥168). Pick the nearest bucket.\n"
+    "     - Set staff_split_hint to 60 (middle C) unless the pitch range "
+    "clearly suggests otherwise.\n"
+    "     - Leave key_signature and time_signature unset (they fall back "
+    "to the detected values).\n"
+    "     - If a filename hint is provided and no better title is known, "
+    "use the filename with the extension stripped and separators "
+    "(_, -) replaced with spaces as the title.\n"
 )
 
 
@@ -70,6 +84,7 @@ def build_user_prompt(
     title_hint: str | None,
     artist_hint: str | None,
     score: PianoScore,
+    filename_hint: str | None = None,
 ) -> str:
     """Assemble the user-facing refinement prompt from a PianoScore digest."""
     md = score.metadata
@@ -96,7 +111,7 @@ def build_user_prompt(
 
     return (
         "User-provided hint:\n"
-        f"  title={title_hint!r}, artist={artist_hint!r}\n"
+        f"  title={title_hint!r}, artist={artist_hint!r}, filename={filename_hint!r}\n"
         "\n"
         "Detected from transcription:\n"
         f"  key = {md.key}\n"
