@@ -54,7 +54,7 @@ jobs:
         env:
           # TUNECHAT_URL is baked into the Flutter JS bundle at build time
           # via --dart-define (see Dockerfile flutter-build stage).
-          # Pulling through env: is the safe pattern — inline ${{...}}
+          # Pulling through env: is the safe pattern — inline GitHub Actions expressions (escaped)
           # in a run: shell line is a workflow-injection smell.
           TUNECHAT_URL: ${{ vars.OHSHEET_TUNECHAT_URL }}
         run: |
@@ -103,7 +103,7 @@ jobs:
           echo "COMMIT_SHA=${{ github.sha }}" >> /tmp/.env
           echo "DOMAIN=${{ vars.DOMAIN }}" >> /tmp/.env
           # TuneChat — values come from the step env: above (safe shell
-          # expansion of pre-declared env vars, not inline ${{...}}).
+          # expansion of pre-declared env vars, not inline GitHub Actions expressions (escaped)).
           echo "OHSHEET_TUNECHAT_ENABLED=${OHSHEET_TUNECHAT_ENABLED}" >> /tmp/.env
           echo "OHSHEET_TUNECHAT_URL=${OHSHEET_TUNECHAT_URL}" >> /tmp/.env
           echo "OHSHEET_TUNECHAT_API_KEY=${OHSHEET_TUNECHAT_API_KEY}" >> /tmp/.env
