@@ -918,23 +918,37 @@ def _fix_voice_collision_chord_tags(raw: bytes) -> bytes:
 
             # --- Pass 1: compute global onset for each note element ---
             global_pos = 0
+            last_onset = 0  # onset of the most recent non-chord note
             note_data: list[tuple[int, int, str, int, ET.Element, bool]] = []
             # (elem_index, onset_divisions, voice, duration, element, is_rest)
 
             for i, el in enumerate(elem_list):
                 if el.tag == "note":
+                    is_grace = el.find("grace") is not None
+                    if is_grace:
+                        # Grace notes are decorative; exclude from collision detection.
+                        # They stay in the element list but are not tracked.
+                        continue
                     is_chord = el.find("chord") is not None
                     dur = int(el.findtext("duration") or 0)
                     v_el = el.find("voice")
                     v = (v_el.text if v_el is not None else "1") or "1"
                     is_rest = el.find("rest") is not None
-                    note_data.append((i, global_pos, v, dur, el, is_rest))
+                    # Bug fix: chord notes share the onset of the preceding
+                    # non-chord note. Using global_pos here would be wrong
+                    # because global_pos has already been advanced by the
+                    # preceding note's duration.
+                    onset = last_onset if is_chord else global_pos
+                    note_data.append((i, onset, v, dur, el, is_rest))
                     if not is_chord:
+                        last_onset = global_pos
                         global_pos += dur
                 elif el.tag == "backup":
                     global_pos = max(0, global_pos - int(el.findtext("duration") or 0))
+                    last_onset = global_pos
                 elif el.tag == "forward":
                     global_pos += int(el.findtext("duration") or 0)
+                    last_onset = global_pos
 
             # --- Pass 2: detect (voice, onset) collisions ---
             voice_onset_counts: dict[tuple[str, int], int] = {}
@@ -951,9 +965,16 @@ def _fix_voice_collision_chord_tags(raw: bytes) -> bytes:
             # --- Pass 3: restructure measure ---
             # Keep non-note/backup/forward elements (attributes, directions,
             # barlines) in their original positions at the front.
+            # NOTE: mid-measure <direction> elements are relocated to the front.
+            # In practice music21 places them at measure boundaries, so this
+            # doesn't affect current output. A future improvement could track
+            # their original positions and re-interleave them.
+            # Grace notes were excluded from note_data (not collision-tracked)
+            # but must still be preserved verbatim in the rebuilt measure.
             static_elems = [
                 el for el in elem_list
                 if el.tag not in ("note", "backup", "forward")
+                or (el.tag == "note" and el.find("grace") is not None)
             ]
 
             # Group notes by voice, sort each group by onset.
@@ -994,13 +1015,20 @@ def _fix_voice_collision_chord_tags(raw: bytes) -> bytes:
                 cur_end = 0
                 for onset in sorted(by_onset.keys()):
                     notes_at_onset = by_onset[onset]
-                    first_at_onset = True
+                    # Bug fix: only the first *pitched* note at an onset is the
+                    # "anchor"; rests don't count. Without this, a rest at an
+                    # onset would prevent the following pitched note from being
+                    # recognised as the anchor, wrongly giving it <chord/>.
+                    first_pitched_seen = False
                     for dur, el, is_rest in notes_at_onset:
                         # Remove any stale <chord/> tag; we will re-add as needed.
                         chord_el = el.find("chord")
                         if chord_el is not None:
                             el.remove(chord_el)
-                        if not first_at_onset and not is_rest:
+                        if is_rest:
+                            measure.append(el)
+                            continue
+                        if first_pitched_seen:
                             ET.SubElement(el, "chord")  # appends at end
                             # MusicXML spec requires <chord/> to be the *first*
                             # child of <note>.  Move it there.
@@ -1009,7 +1037,7 @@ def _fix_voice_collision_chord_tags(raw: bytes) -> bytes:
                                 el.remove(chord_tag)
                                 el.insert(0, chord_tag)
                         else:
-                            first_at_onset = False
+                            first_pitched_seen = True
                         measure.append(el)
                     # Duration of this onset slot = first (non-chord) note's dur.
                     cur_end = onset + notes_at_onset[0][0]

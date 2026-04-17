@@ -1360,6 +1360,227 @@ def test_fix_voice_collision_chord_tags_unit():
     )
 
 
+def test_fix_voice_collision_preserves_preexisting_chord():
+    """Bug fix: pre-existing <chord/> tags must keep the correct onset.
+
+    Before the fix, Pass 1 recorded ``global_pos`` (already advanced by the
+    preceding note) as the chord note's onset instead of the shared onset.
+    This caused Pass 2 to miss the true collision and Pass 3 to strip the
+    original <chord/> tag.
+
+    Scenario: C4 (voice 1, dur=12) + E4 (voice 1, <chord/>, dur=12) form a
+    pre-existing chord.  G4 is voice 2 and collides with voice-1 onset=0 after
+    remap — it should get <chord/> added. C4+E4 must remain a chord.
+    """
+    import xml.etree.ElementTree as ET
+
+    from backend.services.engrave import _fix_voice_collision_chord_tags
+
+    # C4 + E4 are a pre-existing chord in voice 1.
+    # G4 is in voice 2 at the same onset — triggers the collision the
+    # function is designed to fix. After the fix:
+    #   - C4 and E4 must remain simultaneous (E4 keeps or regains <chord/>)
+    #   - G4 must get <chord/> (it collides with another voice-2 note if any,
+    #     but here the interesting thing is that E4 is correctly tracked at
+    #     onset=0, not onset=12)
+    raw = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<score-partwise version="4.0">'
+        b'<part id="P1">'
+        b'<measure number="1">'
+        b'<attributes><divisions>12</divisions></attributes>'
+        b'<note><pitch><step>C</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>1</voice></note>'
+        b'<note><chord/>'
+        b'<pitch><step>E</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>1</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>E</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>2</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>G</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>2</voice></note>'
+        b'</measure>'
+        b'</part>'
+        b'</score-partwise>'
+    )
+
+    result = _fix_voice_collision_chord_tags(raw)
+    root = ET.fromstring(result)
+    measure = root.find("part/measure")
+    assert measure is not None
+
+    note_elems = [el for el in measure if el.tag == "note"]
+
+    def pitch_name(el):
+        p = el.find("pitch")
+        if p is None:
+            return "?"
+        return (p.findtext("step") or "") + (p.findtext("octave") or "")
+
+    def voice_of(el):
+        v = el.find("voice")
+        return v.text if v is not None else "1"
+
+    # Walk the output to compute actual onsets.
+    global_pos = 0
+    onset_map: dict[str, int] = {}  # pitch_name → onset
+    for el in measure:
+        if el.tag == "note":
+            is_chord = el.find("chord") is not None
+            dur = int(el.findtext("duration") or 0)
+            pn = pitch_name(el)
+            if not is_chord:
+                onset_map[pn] = global_pos
+                global_pos += dur
+            else:
+                onset_map[pn] = global_pos  # shares current non-advancing position
+        elif el.tag == "backup":
+            global_pos = max(0, global_pos - int(el.findtext("duration") or 0))
+        elif el.tag == "forward":
+            global_pos += int(el.findtext("duration") or 0)
+
+    # C4 and E4 (voice 1) must share onset=0.
+    assert onset_map.get("C4") == 0, f"C4 onset should be 0, got {onset_map.get('C4')}"
+    assert onset_map.get("E4") == 0, (
+        f"E4 (pre-existing chord) onset should be 0, got {onset_map.get('E4')}. "
+        "Bug 1 regression: chord note was recorded at wrong onset."
+    )
+
+    # The voice-2 collision (E4 + G4 both at onset=0 in voice 2) must be resolved.
+    # G4 must carry <chord/>.
+    g4_notes = [el for el in note_elems if pitch_name(el) == "G4"]
+    assert g4_notes, "G4 not found in output"
+    assert g4_notes[0].find("chord") is not None, "G4 should have <chord/> after collision fix"
+
+
+def test_fix_voice_collision_grace_note_passthrough():
+    """Bug fix: grace notes must not trigger false collisions.
+
+    Grace notes have dur=0 and two in the same voice both appear at onset=0,
+    which before the fix would trigger a spurious collision and cause the
+    second grace note (and even subsequent regular notes) to get <chord/>.
+
+    After the fix, grace notes are excluded from collision detection and pass
+    through the measure unchanged (no <chord/> added).
+    """
+    import xml.etree.ElementTree as ET
+
+    from backend.services.engrave import _fix_voice_collision_chord_tags
+
+    # Two grace notes in voice 1, followed by a regular quarter note.
+    # No real collision should be detected; the measure should be returned
+    # unchanged (rewrites=0 path), so the grace notes pass through intact.
+    raw = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<score-partwise version="4.0">'
+        b'<part id="P1">'
+        b'<measure number="1">'
+        b'<attributes><divisions>12</divisions></attributes>'
+        b'<note><grace/>'
+        b'<pitch><step>D</step><octave>4</octave></pitch>'
+        b'<voice>1</voice></note>'
+        b'<note><grace/>'
+        b'<pitch><step>E</step><octave>4</octave></pitch>'
+        b'<voice>1</voice></note>'
+        b'<note><pitch><step>C</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>1</voice></note>'
+        b'</measure>'
+        b'</part>'
+        b'</score-partwise>'
+    )
+
+    result = _fix_voice_collision_chord_tags(raw)
+    root = ET.fromstring(result)
+    measure = root.find("part/measure")
+    assert measure is not None
+
+    note_elems = [el for el in measure if el.tag == "note"]
+
+    # All three notes must survive.
+    assert len(note_elems) == 3, f"Expected 3 notes, got {len(note_elems)}"
+
+    # The grace notes must NOT have <chord/>.
+    grace_notes = [el for el in note_elems if el.find("grace") is not None]
+    assert len(grace_notes) == 2, f"Expected 2 grace notes, got {len(grace_notes)}"
+    for gn in grace_notes:
+        assert gn.find("chord") is None, (
+            "Grace note must not have <chord/> — Bug 2 regression: false collision detected."
+        )
+
+    # The regular C4 must also not have <chord/>.
+    c4_notes = [el for el in note_elems if el.findtext("pitch/step") == "C"]
+    assert c4_notes, "C4 regular note not found"
+    assert c4_notes[0].find("chord") is None, "Regular C4 must not have <chord/>"
+
+
+def test_fix_voice_collision_rest_at_onset_no_chord_on_pitched():
+    """Bug fix: a rest at an onset must not cause the following pitched note
+    to receive <chord/>.
+
+    Before the fix, ``first_at_onset`` was set to False after seeing the rest,
+    making the next pitched note look like a "second note" and wrongly getting
+    <chord/>.  After the fix only pitched notes count as the anchor.
+
+    Scenario: in voice 1, both a rest and C4 share onset=0. C4 must NOT get
+    <chord/>. A second voice (E4 at onset=0) is present to force a collision
+    so the restructure path is triggered.
+    """
+    import xml.etree.ElementTree as ET
+
+    from backend.services.engrave import _fix_voice_collision_chord_tags
+
+    # Voice 1: rest@0 + C4@0 (same onset — rest arrives first in the list).
+    # Voice 2: E4@0 + G4@0 (real collision to ensure restructure runs).
+    # After fix: C4 must not have <chord/>; G4 must have <chord/>.
+    raw = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<score-partwise version="4.0">'
+        b'<part id="P1">'
+        b'<measure number="1">'
+        b'<attributes><divisions>12</divisions></attributes>'
+        b'<note><rest/><duration>12</duration><voice>1</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>C</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>1</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>E</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>2</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>G</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>2</voice></note>'
+        b'</measure>'
+        b'</part>'
+        b'</score-partwise>'
+    )
+
+    result = _fix_voice_collision_chord_tags(raw)
+    root = ET.fromstring(result)
+    measure = root.find("part/measure")
+    assert measure is not None
+
+    note_elems = [el for el in measure if el.tag == "note"]
+
+    def pitch_name(el):
+        p = el.find("pitch")
+        if p is None:
+            return "rest"
+        return (p.findtext("step") or "") + (p.findtext("octave") or "")
+
+    # C4 must not have <chord/> — it is the anchor pitched note at onset=0.
+    c4_notes = [el for el in note_elems if pitch_name(el) == "C4"]
+    assert c4_notes, "C4 not found in output"
+    assert c4_notes[0].find("chord") is None, (
+        "C4 must NOT have <chord/> — Bug 3 regression: rest at onset caused "
+        "the following pitched note to be treated as a chord member."
+    )
+
+    # G4 (second voice-2 note at onset=0) must have <chord/>.
+    g4_notes = [el for el in note_elems if pitch_name(el) == "G4"]
+    assert g4_notes, "G4 not found in output"
+    assert g4_notes[0].find("chord") is not None, "G4 should have <chord/> after collision fix"
+
+
 # ---------------------------------------------------------------------------
 # L2 — Tuplet survival (plan phase 3.4 / PR-13)
 # ---------------------------------------------------------------------------
