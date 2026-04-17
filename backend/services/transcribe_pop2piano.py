@@ -67,7 +67,7 @@ def _load_pop2piano() -> tuple[Any, Any]:
             return _P2P_MODEL, _P2P_PROCESSOR
 
         import torch  # noqa: PLC0415
-        from transformers import (  # noqa: PLC0415
+        from transformers import (  # type: ignore[attr-defined]  # noqa: PLC0415
             Pop2PianoForConditionalGeneration,
             Pop2PianoProcessor,
         )
@@ -87,7 +87,7 @@ def _load_pop2piano() -> tuple[Any, Any]:
             else:
                 device_name = "cpu"
 
-        model = model.to(device_name)
+        model = model.to(device_name)  # type: ignore[arg-type]
         log.info("Pop2Piano loaded on device=%s", device_name)
 
         _P2P_MODEL = model

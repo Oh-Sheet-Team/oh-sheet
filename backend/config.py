@@ -498,7 +498,7 @@ class Settings(BaseSettings):
     refine_call_timeout_sec: int = 120        # per-API-call timeout
     anthropic_api_key: str | None = None
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def refine_active(self) -> bool:
         """Whether the refine stage actually runs.
