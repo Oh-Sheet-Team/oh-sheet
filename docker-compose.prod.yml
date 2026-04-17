@@ -146,6 +146,7 @@ services:
     environment:
       OHSHEET_BLOB_ROOT: /app/blob
       OHSHEET_REDIS_URL: redis://redis:6379/0
+      OHSHEET_ML_API_URL: ${OHSHEET_ML_API_URL:-}
     volumes:
       - blob-data:/app/blob
     depends_on:
