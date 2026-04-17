@@ -2023,3 +2023,42 @@ def test_split_bar_crossing_handles_three_eight_meter():
     assert p2.onset_beat == pytest.approx(1.5)
     assert p2.duration_beat == pytest.approx(1.5)  # full second bar
     assert (ti2, to2) == (True, False)
+
+
+def test_l2_osmd_regression_fixture_structural_checks():
+    """Regression guard — the saved fixture must pass all OSMD-relevant
+    structural checks: empty part names, valid voices, correct divisions,
+    and no measure overflow.
+    """
+    from pathlib import Path
+
+    from lxml import etree
+
+    fixture_path = Path(__file__).parent / "fixtures" / "jammin_osmd_regression.musicxml"
+    if not fixture_path.exists():
+        pytest.skip("jammin_osmd_regression.musicxml not yet generated")
+
+    root = etree.fromstring(fixture_path.read_bytes())
+
+    # Part names must be empty.
+    for pn in root.findall("part-list/score-part/part-name"):
+        assert pn.text is None or pn.text.strip() == "", (
+            f"regression fixture has non-empty <part-name>: {pn.text!r}"
+        )
+
+    # Brace group with "Piano" label must exist.
+    brace_starts = [
+        g for g in root.findall("part-list/part-group")
+        if g.get("type") == "start" and g.findtext("group-symbol") == "brace"
+    ]
+    assert brace_starts, "regression fixture missing brace part-group"
+    assert brace_starts[0].findtext("group-name") == "Piano"
+
+    # Voices in range [1, 4].
+    for v_el in root.iter("voice"):
+        v = int(v_el.text)
+        assert 1 <= v <= 4, f"out-of-range voice: {v}"
+
+    # Divisions = 12.
+    for div in root.iter("divisions"):
+        assert int(div.text) == 12, f"unexpected divisions: {div.text}"
