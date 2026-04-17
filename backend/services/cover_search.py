@@ -685,6 +685,7 @@ def _yt_dlp_search(query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
     """
     import yt_dlp  # local import so tests can patch _yt_dlp_search without
                    # forcing yt-dlp into the test environment.
+    from backend.services._ytdlp_utils import apply_ytdlp_cookies
 
     ydl_opts = {
         "default_search": f"ytsearch{top_k}",
@@ -694,6 +695,7 @@ def _yt_dlp_search(query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
         "extract_flat": True,  # metadata only, don't resolve each result
         "socket_timeout": 15,
     }
+    apply_ytdlp_cookies(ydl_opts)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         result = ydl.extract_info(f"ytsearch{top_k}:{query}", download=False)
@@ -767,6 +769,7 @@ def _yt_dlp_extract_info(url: str) -> dict[str, Any] | None:
     search query.
     """
     import yt_dlp  # local import — keeps yt-dlp out of the test import path
+    from backend.services._ytdlp_utils import apply_ytdlp_cookies
 
     ydl_opts = {
         "quiet": True,
@@ -774,6 +777,7 @@ def _yt_dlp_extract_info(url: str) -> dict[str, Any] | None:
         "skip_download": True,
         "socket_timeout": 15,
     }
+    apply_ytdlp_cookies(ydl_opts)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)

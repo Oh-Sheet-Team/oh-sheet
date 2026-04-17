@@ -95,6 +95,15 @@ jobs:
           OHSHEET_TUNECHAT_URL: ${{ vars.OHSHEET_TUNECHAT_URL }}
           OHSHEET_TUNECHAT_API_KEY: ${{ secrets.OHSHEET_TUNECHAT_API_KEY }}
           OHSHEET_ML_API_URL: ${{ vars.OHSHEET_ML_API_URL }}
+          # YouTube bot-detection bypass. Contents of the
+          # OHSHEET_YTDLP_COOKIES secret (a Netscape-format cookies.txt
+          # exported from a logged-in browser session) gets written to
+          # ~/oh-sheet/youtube-cookies.txt on the VM and bind-mounted
+          # into orchestrator + worker-ingest. Secret may be unset — in
+          # that case an empty file is written and
+          # services/_ytdlp_utils.py detects size 0 and skips cookies.
+          # Refresh recipe: docs/ytdlp-cookies.md
+          OHSHEET_YTDLP_COOKIES: ${{ secrets.OHSHEET_YTDLP_COOKIES }}
         run: |
           # Set up SSH
           mkdir -p ~/.ssh
@@ -118,10 +127,19 @@ jobs:
           echo "OHSHEET_TUNECHAT_API_KEY=${OHSHEET_TUNECHAT_API_KEY}" >> /tmp/.env
           echo "OHSHEET_ML_API_URL=${OHSHEET_ML_API_URL}" >> /tmp/.env
 
-          # Copy compose files to VM (SCP .env to temp name, then atomic mv)
+          # Write the YouTube cookies file to /tmp and SCP it to the VM.
+          # Always write (never conditional) so the bind-mount in
+          # docker-compose.prod.yml has a file to point at. If the
+          # secret is unset, the file is empty — services check file
+          # size > 0 before using it, so empty = run anonymously.
+          printf '%s' "$OHSHEET_YTDLP_COOKIES" > /tmp/youtube-cookies.txt
+          chmod 600 /tmp/youtube-cookies.txt
+
+          # Copy compose files + cookies to VM (SCP tmp names, then atomic mv)
           $SCP docker-compose.prod.yml Caddyfile "${VM_USER}@${VM_HOST}:~/oh-sheet/"
           $SCP /tmp/.env "${VM_USER}@${VM_HOST}:~/oh-sheet/.env.tmp"
-          $SSH "mv ~/oh-sheet/.env.tmp ~/oh-sheet/.env && mv ~/oh-sheet/docker-compose.prod.yml ~/oh-sheet/docker-compose.yml"
+          $SCP /tmp/youtube-cookies.txt "${VM_USER}@${VM_HOST}:~/oh-sheet/youtube-cookies.txt.tmp"
+          $SSH "mv ~/oh-sheet/.env.tmp ~/oh-sheet/.env && mv ~/oh-sheet/docker-compose.prod.yml ~/oh-sheet/docker-compose.yml && mv ~/oh-sheet/youtube-cookies.txt.tmp ~/oh-sheet/youtube-cookies.txt && chmod 600 ~/oh-sheet/youtube-cookies.txt"
 
           # Aggressively reclaim VM disk BEFORE pulling new images.
           # The app image ships heavy ML deps (torch via [pop2piano])

@@ -34,3 +34,6 @@ e2e/playwright-report/index.html
 dump.rdb
 .claude/worktrees/
 eval-results*.json
+
+# YouTube cookies file written by deploy.yml (see docs/ytdlp-cookies.md)
+youtube-cookies.txt
