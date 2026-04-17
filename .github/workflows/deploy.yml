@@ -85,6 +85,7 @@ jobs:
           echo "IMAGE_ASSEMBLER=${{ env.IMAGE_ASSEMBLER }}:${{ github.sha }}" >> /tmp/.env
           echo "COMMIT_SHA=${{ github.sha }}" >> /tmp/.env
           echo "DOMAIN=${{ vars.DOMAIN }}" >> /tmp/.env
+          echo "OHSHEET_TUNECHAT_API_KEY=${{ secrets.TUNECHAT_API_KEY }}" >> /tmp/.env
 
           # Copy compose files to VM (SCP .env to temp name, then atomic mv)
           $SCP docker-compose.prod.yml Caddyfile "${VM_USER}@${VM_HOST}:~/oh-sheet/"

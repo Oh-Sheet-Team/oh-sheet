@@ -6,7 +6,10 @@ COPY frontend/ .
 RUN flutter pub get
 # Empty API_BASE_URL → client uses same-origin relative URLs (/v1/...)
 ARG APP_VERSION=dev
-RUN flutter build web --release --dart-define=API_BASE_URL= --dart-define=APP_VERSION=${APP_VERSION}
+RUN flutter build web --release \
+    --dart-define=API_BASE_URL= \
+    --dart-define=APP_VERSION=${APP_VERSION} \
+    --dart-define=TUNECHAT_URL=https://tunechat-production.up.railway.app
 
 # ---- Stage 2: Shared Python base ----
 # Layers common to both the `api` and `ml` final targets: interpreter,

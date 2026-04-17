@@ -35,6 +35,9 @@ services:
       # time in api/routes/jobs.py); workers just execute whatever stage
       # they're dispatched. Remove after validating condense_only in prod.
       OHSHEET_SCORE_PIPELINE: arrange
+      OHSHEET_TUNECHAT_ENABLED: "true"
+      OHSHEET_TUNECHAT_URL: https://tunechat-production.up.railway.app
+      OHSHEET_TUNECHAT_API_KEY: ${OHSHEET_TUNECHAT_API_KEY}
       COMMIT_SHA: ${COMMIT_SHA:-unknown}
     volumes:
       - blob-data:/app/blob
@@ -55,6 +58,9 @@ services:
     environment:
       OHSHEET_BLOB_ROOT: /app/blob
       OHSHEET_REDIS_URL: redis://redis:6379/0
+      OHSHEET_TUNECHAT_ENABLED: "true"
+      OHSHEET_TUNECHAT_URL: https://tunechat-production.up.railway.app
+      OHSHEET_TUNECHAT_API_KEY: ${OHSHEET_TUNECHAT_API_KEY}
     volumes:
       - blob-data:/app/blob
     depends_on:
