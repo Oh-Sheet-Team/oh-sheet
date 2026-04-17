@@ -884,10 +884,151 @@ def _clear_part_names(raw: bytes) -> bytes:
     return prefix + body
 
 
+def _fix_voice_collision_chord_tags(raw: bytes) -> bytes:
+    """Add missing ``<chord/>`` tags when voice remapping creates duplicate
+    ``(voice, onset)`` positions within the same measure.
+
+    ``_remap_voices_per_staff`` collapses voice 3 → voice 2 so OSMD's
+    VexFlow backend never sees ``voice ≥ 3``.  When the original score
+    had three simultaneous pitches — e.g. a triad where music21 assigns
+    voice 1 = root, voice 2 = third, voice 3 = fifth — after remapping
+    both the third and fifth land in voice 2 at the same global onset
+    positions.  Without ``<chord/>`` tags OSMD treats them sequentially
+    and the notes pile on top of each other (the "note collision"
+    artefact in the spec).
+
+    Fix: for each measure walk the full note / backup / forward sequence
+    while tracking a **global time cursor** (MusicXML has one shared
+    position counter; ``<backup>`` rewinds it for all voices).  If two
+    non-rest notes in the same voice land at the same global onset, the
+    second one is a chord note that must carry ``<chord/>``.  The
+    measure is also restructured so that chord-mates are adjacent in the
+    serialised XML (required by the MusicXML spec — ``<chord/>`` means
+    "simultaneous with the immediately preceding note").
+    """
+    import xml.etree.ElementTree as ET  # noqa: PLC0415
+    from collections import defaultdict  # noqa: PLC0415
+
+    root = ET.fromstring(raw)
+    rewrites = 0
+
+    for part in root.findall("part"):
+        for measure in part.findall("measure"):
+            elem_list = list(measure)
+
+            # --- Pass 1: compute global onset for each note element ---
+            global_pos = 0
+            note_data: list[tuple[int, int, str, int, ET.Element, bool]] = []
+            # (elem_index, onset_divisions, voice, duration, element, is_rest)
+
+            for i, el in enumerate(elem_list):
+                if el.tag == "note":
+                    is_chord = el.find("chord") is not None
+                    dur = int(el.findtext("duration") or 0)
+                    v_el = el.find("voice")
+                    v = (v_el.text if v_el is not None else "1") or "1"
+                    is_rest = el.find("rest") is not None
+                    note_data.append((i, global_pos, v, dur, el, is_rest))
+                    if not is_chord:
+                        global_pos += dur
+                elif el.tag == "backup":
+                    global_pos = max(0, global_pos - int(el.findtext("duration") or 0))
+                elif el.tag == "forward":
+                    global_pos += int(el.findtext("duration") or 0)
+
+            # --- Pass 2: detect (voice, onset) collisions ---
+            voice_onset_counts: dict[tuple[str, int], int] = {}
+            for _, onset, voice, _, el, is_rest in note_data:
+                if not is_rest and el.find("chord") is None:
+                    key = (voice, onset)
+                    voice_onset_counts[key] = voice_onset_counts.get(key, 0) + 1
+
+            if not any(v > 1 for v in voice_onset_counts.values()):
+                continue  # no collision in this measure
+
+            rewrites += 1
+
+            # --- Pass 3: restructure measure ---
+            # Keep non-note/backup/forward elements (attributes, directions,
+            # barlines) in their original positions at the front.
+            static_elems = [
+                el for el in elem_list
+                if el.tag not in ("note", "backup", "forward")
+            ]
+
+            # Group notes by voice, sort each group by onset.
+            voice_note_groups: dict[str, list[tuple[int, int, ET.Element, bool]]] = (
+                defaultdict(list)
+            )
+            for _, onset, voice, dur, el, is_rest in note_data:
+                voice_note_groups[voice].append((onset, dur, el, is_rest))
+            for v_notes in voice_note_groups.values():
+                v_notes.sort(key=lambda x: x[0])
+
+            # Clear and rebuild the measure.
+            for el in list(measure):
+                measure.remove(el)
+            for el in static_elems:
+                measure.append(el)
+
+            sorted_voices = sorted(voice_note_groups.keys())
+            first_voice = True
+            voice_ends: dict[str, int] = {}
+
+            for voice_id in sorted_voices:
+                if not first_voice:
+                    # Back up to start of this voice's content.
+                    backup_amt = max(voice_ends.values()) if voice_ends else 0
+                    if backup_amt > 0:
+                        b_el = ET.Element("backup")
+                        ET.SubElement(b_el, "duration").text = str(backup_amt)
+                        measure.append(b_el)
+                else:
+                    first_voice = False
+
+                # Within each voice, group by onset and emit chord-tagged pairs.
+                by_onset: dict[int, list[tuple[int, ET.Element, bool]]] = defaultdict(list)
+                for onset, dur, el, is_rest in voice_note_groups[voice_id]:
+                    by_onset[onset].append((dur, el, is_rest))
+
+                cur_end = 0
+                for onset in sorted(by_onset.keys()):
+                    notes_at_onset = by_onset[onset]
+                    first_at_onset = True
+                    for dur, el, is_rest in notes_at_onset:
+                        # Remove any stale <chord/> tag; we will re-add as needed.
+                        chord_el = el.find("chord")
+                        if chord_el is not None:
+                            el.remove(chord_el)
+                        if not first_at_onset and not is_rest:
+                            ET.SubElement(el, "chord")  # appends at end
+                            # MusicXML spec requires <chord/> to be the *first*
+                            # child of <note>.  Move it there.
+                            chord_tag = el.find("chord")
+                            if chord_tag is not None:
+                                el.remove(chord_tag)
+                                el.insert(0, chord_tag)
+                        else:
+                            first_at_onset = False
+                        measure.append(el)
+                    # Duration of this onset slot = first (non-chord) note's dur.
+                    cur_end = onset + notes_at_onset[0][0]
+
+                voice_ends[voice_id] = cur_end
+
+    if rewrites == 0:
+        return raw
+
+    prefix_end = raw.find(b"<score-partwise")
+    prefix = raw[:prefix_end] if prefix_end > 0 else b""
+    body = ET.tostring(root, encoding="utf-8", xml_declaration=False)
+    return prefix + body
+
+
 def _sanitize_musicxml_for_osmd(raw: bytes) -> bytes:
     """Post-process music21 MusicXML to fix OSMD + MuseScore issues.
 
-    Four mechanical fixups after music21 export:
+    Five mechanical fixups after music21 export:
 
     1. ``<voice>0</voice>`` → ``<voice>1</voice>`` — music21 emits 0 when
        a note isn't wrapped in a ``Voice`` sub-stream and the part has
@@ -898,7 +1039,13 @@ def _sanitize_musicxml_for_osmd(raw: bytes) -> bytes:
        produces more than two voices per hand. OSMD's VexFlow backend
        crashes (``parentVoiceEntry undefined``) on 3+ voices per part;
        clamping to 2 is the minimum-damage fallback.
-    3. Tie-chain voice alignment — music21 can reassign a bar-crossing
+    3. Voice-collision chord-tag fix — when step 2 collapses e.g. voice 3
+       → voice 2, both sets of notes land at the same global onset
+       positions without ``<chord/>`` tags, causing OSMD to render them
+       sequentially ("note stacking").  ``_fix_voice_collision_chord_tags``
+       detects the collision, reorders the notes so chord-mates are
+       adjacent, and adds ``<chord/>`` to the second note at each onset.
+    4. Tie-chain voice alignment — music21 can reassign a bar-crossing
        note's tie continuation to a different voice in the next
        measure (see ``_split_bar_crossing_notes`` for the upstream
        attempt). MuseScore 4 flags mismatched tie-start / tie-stop
@@ -907,7 +1054,7 @@ def _sanitize_musicxml_for_osmd(raw: bytes) -> bytes:
        tie-stop's ``<voice>`` to match the tie-start's voice. The
        voice reassignment only affects the single tied note;
        surrounding voice content keeps its tags.
-    4. ``<part-name>`` clearing — defense-in-depth to ensure per-staff
+    5. ``<part-name>`` clearing — defense-in-depth to ensure per-staff
        instrument labels stay empty. The ``<part-group>`` brace already
        carries ``<group-name>Piano</group-name>``; non-empty per-part
        names would render as "Instr. P-RH" / "Instr. P-LH" in OSMD.
@@ -917,7 +1064,8 @@ def _sanitize_musicxml_for_osmd(raw: bytes) -> bytes:
     # MusicXML voice=0 is invalid and OSMD rejects it outright.
     text = re.sub(r"<voice>0</voice>", "<voice>1</voice>", text)
     remapped = _remap_voices_per_staff(text.encode("utf-8"))
-    cleared = _clear_part_names(remapped)
+    chord_fixed = _fix_voice_collision_chord_tags(remapped)
+    cleared = _clear_part_names(chord_fixed)
     return _align_tie_chain_voices(cleared)
 
 

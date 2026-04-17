@@ -1094,6 +1094,273 @@ def test_musicxml_write_make_notation_false_needs_split_at_durations() -> None:
 
 
 # ---------------------------------------------------------------------------
+# L2 — Voice collision / chord-tag fix (Task 4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", FIXTURE_NAMES)
+def test_l2_no_voice_onset_collision(name: str, engraved_artifacts):
+    """No two non-chord notes in the same voice may share the same global onset.
+
+    After ``_remap_voices_per_staff()`` collapses voice 3 → voice 2,
+    a measure can have two backup-separated groups of voice-2 notes at
+    the same global beat positions.  Without ``<chord/>`` tags OSMD
+    renders them sequentially, producing note-stacking collisions.
+    ``_fix_voice_collision_chord_tags()`` must resolve this by adding
+    ``<chord/>`` to the second note at each (voice, onset) pair.
+
+    This test walks every measure in every part using a global time
+    cursor (the same model OSMD uses) and asserts that no two non-chord
+    pitched notes in the same voice land at the same position.
+    """
+    musicxml, _ = engraved_artifacts[name]
+
+    import xml.etree.ElementTree as ET  # noqa: PLC0415
+
+    root = ET.fromstring(musicxml)
+    collisions: list[tuple[str, str, str, int]] = []
+
+    for part in root.findall("part"):
+        part_id = part.get("id", "?")
+        for measure in part.findall("measure"):
+            m_num = measure.get("number", "?")
+            global_pos = 0
+            seen: set[tuple[str, int]] = set()
+
+            for el in measure:
+                if el.tag == "note":
+                    is_chord = el.find("chord") is not None
+                    is_rest = el.find("rest") is not None
+                    dur = int(el.findtext("duration") or 0)
+                    v_el = el.find("voice")
+                    voice = (v_el.text if v_el is not None else "1") or "1"
+
+                    onset = global_pos
+                    if not is_chord:
+                        global_pos += dur
+
+                    if not is_chord and not is_rest:
+                        key = (voice, onset)
+                        if key in seen:
+                            collisions.append((part_id, m_num, voice, onset))
+                        else:
+                            seen.add(key)
+                elif el.tag == "backup":
+                    global_pos = max(0, global_pos - int(el.findtext("duration") or 0))
+                elif el.tag == "forward":
+                    global_pos += int(el.findtext("duration") or 0)
+
+    assert not collisions, (
+        f"{name}: voice/onset collisions (note stacking) found — "
+        f"OSMD will render these sequentially instead of as chords: "
+        f"{[(pid, m, v, o) for pid, m, v, o in collisions[:5]]}"
+    )
+
+
+def test_l2_triad_chord_has_no_voice_collision():
+    """Regression: three simultaneous notes (triad) on the same hand must
+    not produce voice/onset collisions after voice remapping.
+
+    When all three chord notes in a triad start on the same beat,
+    music21 puts them in voices 1, 2, 3.  After ``_remap_voices_per_staff``
+    remaps voice 3 → voice 2, both the third and fifth of the chord land
+    in voice 2 at the same global onset without ``<chord/>`` tags.
+    ``_fix_voice_collision_chord_tags`` must detect this and add the
+    missing ``<chord/>`` element, restructuring the note order so
+    chord-mates are adjacent (as the MusicXML spec requires).
+    """
+    import xml.etree.ElementTree as ET
+
+    from backend.contracts import (
+        PianoScore,
+        ScoreMetadata,
+        ScoreNote,
+        TempoMapEntry,
+    )
+    from backend.services.engrave import _engrave_sync
+
+    # One measure of four simultaneous triads: C-E-G (C major) on each beat.
+    # All three notes per triad have the same onset beat and voice=1, so
+    # music21 internally assigns them to voices 1, 2, 3.
+    rh: list[ScoreNote] = []
+    for beat in range(4):
+        for i, pitch in enumerate([60, 64, 67]):  # C4, E4, G4
+            rh.append(
+                ScoreNote(
+                    id=f"rh-{beat}-{i}",
+                    pitch=pitch,
+                    onset_beat=float(beat),
+                    duration_beat=1.0,
+                    velocity=80,
+                    voice=1,
+                )
+            )
+
+    score = PianoScore(
+        metadata=ScoreMetadata(
+            key="C:major",
+            time_signature=(4, 4),
+            tempo_map=[TempoMapEntry(time_sec=0.0, beat=0.0, bpm=120.0)],
+            difficulty="intermediate",
+            sections=[],
+            chord_symbols=[],
+        ),
+        right_hand=rh,
+        left_hand=[],
+    )
+
+    _pdf, musicxml, _midi, _chord_count = _engrave_sync(
+        score, title="triad_test", composer="test"
+    )
+
+    root = ET.fromstring(musicxml)
+    collisions: list[tuple[str, str, int]] = []
+
+    for part in root.findall("part"):
+        for measure in part.findall("measure"):
+            m_num = measure.get("number", "?")
+            global_pos = 0
+            seen: set[tuple[str, int]] = set()
+
+            for el in measure:
+                if el.tag == "note":
+                    is_chord = el.find("chord") is not None
+                    is_rest = el.find("rest") is not None
+                    dur = int(el.findtext("duration") or 0)
+                    v_el = el.find("voice")
+                    voice = (v_el.text if v_el is not None else "1") or "1"
+
+                    onset = global_pos
+                    if not is_chord:
+                        global_pos += dur
+
+                    if not is_chord and not is_rest:
+                        key = (voice, onset)
+                        if key in seen:
+                            collisions.append((m_num, voice, onset))
+                        else:
+                            seen.add(key)
+                elif el.tag == "backup":
+                    global_pos = max(0, global_pos - int(el.findtext("duration") or 0))
+                elif el.tag == "forward":
+                    global_pos += int(el.findtext("duration") or 0)
+
+    assert not collisions, (
+        f"triad chord produced voice/onset collisions: {collisions}. "
+        f"OSMD will stack these notes instead of rendering the chord."
+    )
+
+    # Also verify that the total note count is preserved (12 RH attacks in 1 measure).
+    attack_count = 0
+    for note in root.iter("note"):
+        if note.find("rest") is not None:
+            continue
+        tie_stops = [t for t in note.findall("tie") if t.get("type") == "stop"]
+        if tie_stops and len(tie_stops) == len(note.findall("tie")):
+            continue
+        attack_count += 1
+    assert attack_count == 12, (
+        f"expected 12 note attacks (4 triads × 3 notes), got {attack_count}"
+    )
+
+
+def test_fix_voice_collision_chord_tags_unit():
+    """Unit test for ``_fix_voice_collision_chord_tags`` directly.
+
+    Hand-builds MusicXML with a voice-3-remapped-to-voice-2 collision and
+    verifies the function resolves it — no further dependencies on the
+    engrave pipeline.
+    """
+    import xml.etree.ElementTree as ET
+
+    from backend.services.engrave import _fix_voice_collision_chord_tags
+
+    # Minimal measure: voice 1 C4@0, voice 2 E4@0, backup, voice 2 G4@0
+    # (i.e. the G4 was originally voice 3 and got remapped to voice 2).
+    # After the fix, G4 should carry <chord/> and be adjacent to E4.
+    raw = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<score-partwise version="4.0">'
+        b'<part id="P1">'
+        b'<measure number="1">'
+        b'<attributes><divisions>12</divisions>'
+        b'<time><beats>4</beats><beat-type>4</beat-type></time></attributes>'
+        b'<note><pitch><step>C</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>1</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>E</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>2</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>G</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>2</voice></note>'
+        b'</measure>'
+        b'</part>'
+        b'</score-partwise>'
+    )
+
+    result = _fix_voice_collision_chord_tags(raw)
+    root = ET.fromstring(result)
+    measure = root.find("part/measure")
+    assert measure is not None
+
+    # Walk the measure and check no (voice, onset) collision remains.
+    global_pos = 0
+    seen: set[tuple[str, int]] = set()
+    collisions: list[tuple[str, int]] = []
+    notes_info: list[tuple[str, int, bool, str]] = []  # (voice, onset, is_chord, pitch)
+
+    for el in measure:
+        if el.tag == "note":
+            is_chord = el.find("chord") is not None
+            is_rest = el.find("rest") is not None
+            dur = int(el.findtext("duration") or 0)
+            v_el = el.find("voice")
+            voice = (v_el.text if v_el is not None else "1") or "1"
+            pitch_el = el.find("pitch")
+            pitch_name = (
+                (pitch_el.findtext("step") or "") + (pitch_el.findtext("octave") or "")
+                if pitch_el is not None else "?"
+            )
+
+            onset = global_pos
+            if not is_chord:
+                global_pos += dur
+                if not is_rest:
+                    key = (voice, onset)
+                    if key in seen:
+                        collisions.append(key)
+                    else:
+                        seen.add(key)
+            notes_info.append((voice, onset, is_chord, pitch_name))
+
+        elif el.tag == "backup":
+            global_pos = max(0, global_pos - int(el.findtext("duration") or 0))
+        elif el.tag == "forward":
+            global_pos += int(el.findtext("duration") or 0)
+
+    assert not collisions, f"collision still present after fix: {collisions}"
+
+    # G4 must have <chord/> now.
+    g4_notes = [n for n in notes_info if n[3] == "G4"]
+    assert g4_notes, "G4 note not found in measure"
+    g4_voice, g4_onset, g4_is_chord, _ = g4_notes[0]
+    assert g4_is_chord, "G4 should have <chord/> after fix"
+
+    # E4 and G4 must be adjacent in the element list (chord-mate adjacency).
+    note_elems = [el for el in measure if el.tag == "note"]
+    pitch_seq = [
+        (el.findtext("pitch/step") or "") + (el.findtext("pitch/octave") or "")
+        for el in note_elems
+    ]
+    e4_idx = pitch_seq.index("E4")
+    g4_idx = pitch_seq.index("G4")
+    assert abs(e4_idx - g4_idx) == 1, (
+        f"E4 and G4 must be adjacent in the note list for <chord/> to work; "
+        f"found at positions {e4_idx} and {g4_idx} in {pitch_seq}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # L2 — Tuplet survival (plan phase 3.4 / PR-13)
 # ---------------------------------------------------------------------------
 
