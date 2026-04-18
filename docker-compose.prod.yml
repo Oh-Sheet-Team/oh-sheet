@@ -43,9 +43,19 @@ services:
       OHSHEET_TUNECHAT_ENABLED: ${OHSHEET_TUNECHAT_ENABLED:-false}
       OHSHEET_TUNECHAT_URL: ${OHSHEET_TUNECHAT_URL:-}
       OHSHEET_TUNECHAT_API_KEY: ${OHSHEET_TUNECHAT_API_KEY:-}
+      # YouTube bot-detection bypass. deploy.yml writes the
+      # OHSHEET_YTDLP_COOKIES secret to ~/oh-sheet/youtube-cookies.txt
+      # on the VM; this path is where the mounted file lands inside the
+      # container. services/_ytdlp_utils.py checks file size > 0 before
+      # using it, so an unset/empty secret is a safe no-op.
+      OHSHEET_YTDLP_COOKIES_PATH: /app/youtube-cookies.txt
       COMMIT_SHA: ${COMMIT_SHA:-unknown}
     volumes:
       - blob-data:/app/blob
+      # Bind-mount the cookies file read-only. Source file must exist on
+      # the VM before ``docker compose up`` — deploy.yml creates it (or
+      # empty file if secret unset) so this mount never fails.
+      - ./youtube-cookies.txt:/app/youtube-cookies.txt:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -70,8 +80,14 @@ services:
       OHSHEET_TUNECHAT_ENABLED: ${OHSHEET_TUNECHAT_ENABLED:-false}
       OHSHEET_TUNECHAT_URL: ${OHSHEET_TUNECHAT_URL:-}
       OHSHEET_TUNECHAT_API_KEY: ${OHSHEET_TUNECHAT_API_KEY:-}
+      # YouTube bot-detection bypass — worker-ingest is where the actual
+      # yt-dlp download happens (services/ingest.py::_download_youtube_sync).
+      # Same bind-mount as orchestrator for cover_search probes that also
+      # hit yt-dlp (_yt_dlp_search + _yt_dlp_extract_info).
+      OHSHEET_YTDLP_COOKIES_PATH: /app/youtube-cookies.txt
     volumes:
       - blob-data:/app/blob
+      - ./youtube-cookies.txt:/app/youtube-cookies.txt:ro
     depends_on:
       redis:
         condition: service_healthy

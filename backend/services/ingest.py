@@ -26,6 +26,7 @@ from backend.contracts import (
     RemoteAudioFile,
     RemoteMidiFile,
 )
+from backend.services._ytdlp_utils import apply_ytdlp_cookies
 from backend.services.cover_search import find_clean_source, probe_youtube_metadata
 
 log = logging.getLogger(__name__)
@@ -104,6 +105,7 @@ def _download_youtube_sync(url: str, blob_store) -> tuple[RemoteAudioFile, str |
             "noplaylist": True,
             "socket_timeout": 30,
         }
+        apply_ytdlp_cookies(ydl_opts)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

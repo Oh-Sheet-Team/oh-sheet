@@ -604,6 +604,28 @@ class Settings(BaseSettings):
     tunechat_api_key: str = ""
     tunechat_timeout_sec: int = 300
 
+    # ── YouTube bot-detection bypass (yt-dlp cookies) ─────────────────
+    # YouTube periodically flags known data-center IPs (GCP, AWS, etc.)
+    # as bot traffic and demands a signed-in session. When that happens,
+    # ingest + cover_search users see "Sign in to confirm you're not a
+    # bot" from yt-dlp and the job fails before it reaches transcription.
+    #
+    # Setting this to a path of a Netscape-format cookies.txt file (from
+    # a logged-in browser session) routes yt-dlp's requests through that
+    # session and bypasses the bot check. Leave empty to run anonymously
+    # — works until YouTube rate-limits the VM.
+    #
+    # Deploy story: the deploy.yml writes the OHSHEET_YTDLP_COOKIES
+    # GitHub secret to ~/oh-sheet/youtube-cookies.txt on the VM, and
+    # docker-compose bind-mounts that file at /app/youtube-cookies.txt
+    # inside the orchestrator + worker-ingest containers. Services
+    # check file size > 0 before using the path, so an unset/empty
+    # secret is a safe no-op.
+    #
+    # Env: OHSHEET_YTDLP_COOKIES_PATH
+    # Refresh: see docs/ytdlp-cookies.md for browser-export instructions
+    ytdlp_cookies_path: str | None = None
+
     # ---- Arrange backend (rules vs HF MIDI path) ---------------------------
     # ``rules`` — existing hand assignment + quantization in arrange.
     # ``hf_midi_identity`` — materialize MIDI → HF inference (see
