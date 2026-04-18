@@ -1,0 +1,16 @@
+{
+  "title": "Clair de Lune",
+  "composer": "Claude Debussy",
+  "key_signature": "Db:major",
+  "time_signature": [9, 8],
+  "tempo_bpm": 66,
+  "tempo_marking": "Andante très expressif",
+  "sections": [
+    {"start_beat": 0.0, "end_beat": 24.0, "label": "intro"},
+    {"start_beat": 24.0, "end_beat": 72.0, "label": "verse"},
+    {"start_beat": 72.0, "end_beat": 96.0, "label": "outro"}
+  ],
+  "repeats": [],
+  "title_hint": "claire de lune",
+  "artist_hint": null
+}

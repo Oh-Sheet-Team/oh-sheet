@@ -14,6 +14,9 @@ HOST         ?= 0.0.0.0
 PORT         ?= 8000
 FLUTTER      ?= flutter
 BASE_IMAGE   ?= ghcr.io/oh-sheet-team/ohsheet-dev-base:latest
+# Use the same interpreter as `python3` on PATH (after `source venv/bin/activate`,
+# that is your venv). Override if needed: make install PYTHON=.venv/bin/python3
+PYTHON       ?= python3
 
 DART_DEFINE := $(if $(API_BASE_URL),--dart-define=API_BASE_URL=$(API_BASE_URL),)
 
@@ -43,6 +46,7 @@ help:
 	@echo "  make test               run backend pytest suite"
 	@echo "  make eval               score TranscribeService on the eval/fixtures/clean_midi subset"
 	@echo "                          (requires .[basic-pitch] + .[eval] + fluidsynth on PATH)"
+	@echo "  make eval-refine        score RefineService against the refine_golden set (requires OHSHEET_ANTHROPIC_API_KEY)"
 	@echo "  make lint               ruff + $(FLUTTER) analyze"
 	@echo "  make clean              remove build artifacts and the local blob store"
 
@@ -62,41 +66,41 @@ require-flutter:
 	fi
 
 install-backend:
-	pip install -e ".[dev]"
+	$(PYTHON) -m pip install -e ".[dev]"
 
 install-basic-pitch:
 	# madmom has no pre-built wheels and its setup.py requires Cython +
 	# setuptools at build time.  pip's default build-isolation doesn't
 	# expose packages already in the venv, so we pre-install the build
 	# deps and then build madmom without isolation.
-	pip install setuptools Cython numpy
-	pip install --no-build-isolation "madmom>=0.16"
-	pip install -e ".[basic-pitch]"
+	$(PYTHON) -m pip install setuptools Cython numpy
+	$(PYTHON) -m pip install --no-build-isolation "madmom>=0.16"
+	$(PYTHON) -m pip install -e ".[basic-pitch]"
 	# basic-pitch 0.4.0 hard-codes tensorflow-macos as a base dep on
 	# Darwin+Python>3.11 (no wheels for 3.13), so install it with
 	# --no-deps and rely on [basic-pitch] above for the actual runtime
 	# deps. See pyproject.toml comment for details.
-	pip install --no-deps "basic-pitch>=0.4"
+	$(PYTHON) -m pip install --no-deps "basic-pitch>=0.4"
 
 install-pop2piano:
 	# Pop2Piano audio-to-piano transformer. On by default when deps are
 	# installed (OHSHEET_POP2PIANO_ENABLED=1). Replaces Demucs + Basic
 	# Pitch with a single transformer pass. essentia only ships x86_64
 	# Linux + macOS wheels; Docker builds use platform: linux/amd64.
-	pip install -e ".[pop2piano]"
+	$(PYTHON) -m pip install -e ".[pop2piano]"
 
 install-demucs:
 	# Optional stem-separation stack (demucs + torch). Off by default;
 	# flip on via OHSHEET_DEMUCS_ENABLED=1. The htdemucs pretrained
 	# weights are CC BY-NC 4.0 — see pyproject.toml for the commercial
 	# caveat before enabling in production.
-	pip install -e ".[demucs]"
+	$(PYTHON) -m pip install -e ".[demucs]"
 
 install-eval:
 	# Offline eval harness — mir_eval only. Assumes ``.[basic-pitch]``
 	# is already installed (the harness drives the real TranscribeService
 	# to score). Does not install fluidsynth; that's a system binary.
-	pip install -e ".[eval]"
+	$(PYTHON) -m pip install -e ".[eval]"
 
 install-frontend: require-flutter
 	cd $(FRONTEND) && $(FLUTTER) pub get
@@ -151,6 +155,13 @@ test-e2e:
 # See the script's module docstring for tuning / sampling options.
 eval:
 	python scripts/eval_transcription.py --out eval-baseline.json
+
+# Live refine eval. Runs the RefineService against
+# eval/fixtures/refine_golden/ using the real Anthropic API.
+# Costs real money; excluded from CI. Writes refine-baseline.json.
+# Requires OHSHEET_ANTHROPIC_API_KEY (exported or in .env at repo root).
+eval-refine:
+	python scripts/eval_refine.py --out refine-baseline.json
 
 lint:
 	ruff check backend tests

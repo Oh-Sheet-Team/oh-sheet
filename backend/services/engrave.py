@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from fractions import Fraction
 from pathlib import Path
 
 from shared.musescore_cli import musescore_executable_paths
@@ -23,6 +24,7 @@ from backend.contracts import (
     EngravedScoreData,
     HumanizedPerformance,
     PianoScore,
+    ScoreNote,
     beat_to_sec,
 )
 from backend.storage.base import BlobStore
@@ -174,6 +176,27 @@ _PITCH_OCTAVE_RE = re.compile(r"^[A-G][#b]?\d+$")
 # mis-labeling rather than a confused analyzer. Below this we trust
 # the declared key and skip the override.
 _KEY_OVERRIDE_MIN_CORRELATION = 0.80
+
+
+# Export divisions per quarter — matches the ``divisionsPerQuarter=12``
+# we force on the music21 exporter below. LCM(3, 4) covers 16ths
+# (3/12 qL) and 8th-note triplets (4/12 qL), the finest grids arrange
+# emits. Every note onset and duration is snapped to this grid before
+# handoff so float drift from decimal-approximated grids (e.g. arrange's
+# ``0.167`` for 1/6) can't leave a sub-1/12 residual after ``makeNotation``
+# splits notes at barlines. Such residuals map to music21 types like
+# ``2048th`` / ``inexpressible`` that the MusicXML exporter rejects.
+# ``Fraction`` is essential here — rounding a float to 1/12 still yields
+# an inexact binary (e.g. ``23/6`` → ``3.8333333333333335``), and the drift
+# is exactly what reopens the barline-split bug. music21 consumes Fractions
+# as exact rationals.
+_EXPORT_DIVISIONS = 12
+_MIN_SNAPPED_QL = Fraction(1, _EXPORT_DIVISIONS)
+
+
+def _snap_quarter(qL: float) -> Fraction:
+    """Snap a quarterLength to the export grid as an exact ``Fraction``."""
+    return Fraction(round(qL * _EXPORT_DIVISIONS), _EXPORT_DIVISIONS)
 
 
 def _resolve_key_signature(score: PianoScore, music21) -> tuple[str, str, bool]:  # noqa: ANN001
@@ -461,6 +484,113 @@ def _coerce_durations_for_musicxml_export(part, music21) -> None:  # noqa: ANN00
             ql_orig,
             min_safe_ql,
         )
+def _resolve_same_pitch_overlaps_per_voice(notes: list[ScoreNote]) -> list[ScoreNote]:
+    """Truncate an earlier same-(pitch, voice) note when a later one
+    attacks before it ends.
+
+    Mirrors the overlap resolver in ``_render_midi_bytes`` for the
+    MusicXML path. When two notes of the same pitch in the same voice
+    overlap AND the earlier one crosses a bar line, music21's
+    ``makeTies`` can't reliably split the bar-crossing portion inside
+    a ``Voice`` sub-stream — the note lands verbatim in its starting
+    measure and pushes the total voice duration past the time
+    signature's budget. MuseScore flags that overflow as "corrupted
+    score".
+
+    Fixing it upstream (shorten the earlier note to end at the next
+    attack) keeps music21 seeing a clean, sequential voice line.
+    Floor is ``_MIN_SNAPPED_QL`` (1/12 qL) — the smallest duration the
+    MusicXML exporter can reliably encode, matching ``_snap_quarter``'s
+    grid. Using 0.01 here produced overlaps that the later snap step
+    would re-stretch back above ``nxt.onset`` by rounding to 1/12.
+    """
+    by_key: dict[tuple[int, int], list[int]] = {}
+    for i, n in enumerate(notes):
+        by_key.setdefault((n.pitch, n.voice), []).append(i)
+    new_durations: dict[int, float] = {}
+    min_dur = float(_MIN_SNAPPED_QL)
+    for idxs in by_key.values():
+        if len(idxs) < 2:
+            continue
+        idxs.sort(key=lambda i: notes[i].onset_beat)
+        for j in range(len(idxs) - 1):
+            prev = notes[idxs[j]]
+            nxt = notes[idxs[j + 1]]
+            if prev.onset_beat + prev.duration_beat > nxt.onset_beat:
+                new_durations[idxs[j]] = max(min_dur, nxt.onset_beat - prev.onset_beat)
+    if not new_durations:
+        return notes
+    return [
+        n.model_copy(update={"duration_beat": new_durations[i]}) if i in new_durations else n
+        for i, n in enumerate(notes)
+    ]
+
+
+def _split_bar_crossing_notes(
+    notes: list[ScoreNote],
+    beats_per_measure: float,
+) -> list[tuple[ScoreNote, bool, bool]]:
+    """Split notes that cross bar lines into consecutive in-measure pieces.
+
+    Returns a list of ``(piece, tie_in, tie_out)`` tuples — ``tie_in``
+    means the piece is a continuation of an earlier piece, ``tie_out``
+    means the piece will be continued by a later piece. The piece is a
+    ScoreNote copy whose ``onset_beat``/``duration_beat`` lie entirely
+    within one measure.
+
+    Why pre-split: music21's ``makeTies`` is the alternative, but when
+    the score has 2 voices per hand with sparse voice-2 content,
+    music21 assigns a bar-crossing note's continuation a fresh voice
+    number in the next measure. The OSMD sanitizer then clamps that
+    fresh number back to voice 2, breaking the tie chain (start on
+    voice 1, stop on voice 2). MuseScore 4 flags the dangling ties as
+    a corrupt score.
+
+    Pre-splitting keeps each piece entirely within one measure so
+    music21 never renumbers during a split — voices stay stable and
+    the tie marks we set here round-trip cleanly through export.
+    """
+    if beats_per_measure <= 0:
+        return [(n, False, False) for n in notes]
+    out: list[tuple[ScoreNote, bool, bool]] = []
+    min_dur = float(_MIN_SNAPPED_QL)
+    for n in notes:
+        if n.duration_beat <= 0:
+            # Degenerate input (zero or negative) — emit a single minimum-
+            # grid piece so the note survives to MusicXML instead of being
+            # silently dropped by the ``while remaining > 1e-6`` guard.
+            log.warning(
+                "engrave: zero/negative duration for note pitch=%s onset=%s; "
+                "clamping to 1/12 qL",
+                n.pitch, n.onset_beat,
+            )
+            out.append((n.model_copy(update={"duration_beat": min_dur}), False, False))
+            continue
+        remaining = n.duration_beat
+        cur_onset = n.onset_beat
+        prev_piece_tied_out = False
+        while remaining > 1e-6:
+            bar_index = int(cur_onset / beats_per_measure + 1e-9)
+            bar_end = (bar_index + 1) * beats_per_measure
+            piece_dur = min(remaining, bar_end - cur_onset)
+            if piece_dur < 1e-6:
+                # ``cur_onset`` is epsilon-before a bar line (float drift —
+                # e.g. 3.9999999 with beats_per_measure=4). Without this
+                # snap-forward, ``break`` would abandon the rest of the note
+                # and silently lose up to a full measure of playback. Jump
+                # to the next bar line and continue splitting.
+                cur_onset = bar_end
+                continue
+            tie_out = remaining - piece_dur > 1e-6
+            piece = n.model_copy(update={
+                "onset_beat": cur_onset,
+                "duration_beat": piece_dur,
+            })
+            out.append((piece, prev_piece_tied_out, tie_out))
+            prev_piece_tied_out = tie_out
+            cur_onset += piece_dur
+            remaining -= piece_dur
+    return out
 
 
 def _render_musicxml_bytes(
@@ -491,9 +621,11 @@ def _render_musicxml_bytes(
     s.metadata.title = title or "Untitled"
     s.metadata.composer = composer or ""
 
-    ts = music21.meter.TimeSignature(
-        f"{score.metadata.time_signature[0]}/{score.metadata.time_signature[1]}"
-    )
+    ts_num, ts_den = score.metadata.time_signature
+    ts = music21.meter.TimeSignature(f"{ts_num}/{ts_den}")
+    # beats_per_measure in quarter-note units (music21's internal clock).
+    # For 4/4 this is 4; for 3/8 it's 1.5 (three eighth-notes = 1.5 quarters).
+    beats_per_measure = ts_num * 4.0 / ts_den
     # Verify the declared key against a KS pitch-histogram analysis
     # before trusting it. Audio transcription can mis-label a piece and
     # every accidental downstream turns into a sharp/flat explosion.
@@ -514,22 +646,27 @@ def _render_musicxml_bytes(
         for a in perf.expression.articulations:
             articulations_at[a.score_note_id] = a.type
 
-    # Render as a real piano grand staff: two ``PartStaff`` objects bound
-    # by a braced ``StaffGroup``. music21 emits this as a single
-    # ``<part>`` with ``<staves>2</staves>`` and staff-tagged notes —
-    # exactly what OSMD / LilyPond / MuseScore expect for piano. Previous
-    # behavior emitted two separate ``<part>``s ("Right Hand", "Left
-    # Hand") which renderers drew as two stacked instruments without a
-    # connecting brace. Both PartStaffs share ``partName="Piano"`` so the
-    # merged ``<score-part>`` gets the correct "Piano" label.
+    # Render as a real piano grand staff: two ``Part`` objects bound by a
+    # braced ``StaffGroup``. music21 emits this as two separate
+    # ``<part>`` elements joined in ``<part-list>`` by a ``<part-group>``
+    # with ``<group-symbol>brace</group-symbol>`` — the canonical
+    # MusicXML grand-staff idiom that ``musicxml2ly`` / LilyPond, OSMD,
+    # MuseScore, and Verovio all render identically. The older
+    # ``PartStaff`` path emitted one merged ``<part>`` with
+    # ``<staves>2</staves>`` and per-note ``<staff>`` tags, which
+    # ``musicxml2ly`` mishandled: the LH clef was dropped and both staves
+    # rendered in treble. The ``StaffGroup`` name "Piano" sits on the
+    # brace; the individual ``<part>`` elements have empty
+    # ``<part-name/>`` tags, so renderers show a single "Piano" label.
     piano_parts: list = []
-    for hand_name, notes, clef in (
-        ("Right Hand", score.right_hand, music21.clef.TrebleClef()),
-        ("Left Hand", score.left_hand, music21.clef.BassClef()),
+    for hand_name, notes, clef, part_id in (
+        ("Right Hand", score.right_hand, music21.clef.TrebleClef(), "P-RH"),
+        ("Left Hand", score.left_hand, music21.clef.BassClef(), "P-LH"),
     ):
-        part = music21.stream.PartStaff()
-        part.partName = "Piano"
-        part.partAbbreviation = "Pno."
+        part = music21.stream.Part(id=part_id)
+        # Intentionally no partName / partAbbreviation. The StaffGroup
+        # owns the "Piano" / "Pno." label; per-part names would render
+        # twice (once per staff) in some tools.
         part.append(ts)
         part.append(ks)
         if hand_name == "Right Hand":
@@ -548,10 +685,32 @@ def _render_musicxml_bytes(
         max_voice_in_hand = max((sn.voice for sn in notes), default=1)
         use_explicit_voices = 1 < max_voice_in_hand <= 2
 
+        # Resolve same-(pitch, voice) overlaps before music21 sees the
+        # notes. An overlapping same-pitch attack near a bar line defeats
+        # ``makeTies`` inside a ``Voice`` sub-stream, producing a measure
+        # whose voice duration exceeds the time signature — MuseScore 4
+        # renders that as a "Score corrupted" banner.
+        notes = _resolve_same_pitch_overlaps_per_voice(notes)
+
+        # Pre-split bar-crossing notes into tied in-measure pieces so
+        # music21 never needs to split during ``makeTies``. Splitting
+        # inside ``makeTies`` can reassign the continuation to a fresh
+        # voice number in the next measure, which the OSMD sanitizer
+        # then clamps back and the tie chain ends up spanning two
+        # different voice tags — MuseScore 4 reports that as a corrupt
+        # score (dangling ties).
+        split = _split_bar_crossing_notes(notes, float(beats_per_measure))
+
         notes_by_voice: dict[int, list] = {}
-        for sn in sorted(notes, key=lambda n: n.onset_beat):
+        for sn, tie_in, tie_out in sorted(split, key=lambda row: row[0].onset_beat):
+            # Snap onset / duration to the export grid so a note's end
+            # lands exactly on a division boundary — otherwise a barline
+            # split inside ``makeNotation`` can leave a sub-1/12-qL residual
+            # that the MusicXML exporter rejects as '2048th' / 'inexpressible'.
+            onset = max(0.0, _snap_quarter(sn.onset_beat))
+            dur = max(_snap_quarter(sn.duration_beat), _MIN_SNAPPED_QL)
             n = music21.note.Note(sn.pitch)
-            n.quarterLength = sn.duration_beat
+            n.quarterLength = dur
             n.volume.velocity = sn.velocity
             art_type = articulations_at.get(sn.id)
             if art_type == "staccato":
@@ -566,8 +725,14 @@ def _render_musicxml_bytes(
                 # inside <notations> either way, but only the
                 # expressions placement round-trips through makeNotation.
                 n.expressions.append(music21.expressions.Fermata())
+            if tie_in and tie_out:
+                n.tie = music21.tie.Tie("continue")
+            elif tie_in:
+                n.tie = music21.tie.Tie("stop")
+            elif tie_out:
+                n.tie = music21.tie.Tie("start")
             voice_num = sn.voice if use_explicit_voices else 1
-            notes_by_voice.setdefault(voice_num, []).append((sn.onset_beat, n))
+            notes_by_voice.setdefault(voice_num, []).append((onset, n))
 
         if use_explicit_voices:
             # Insert voice 1 before voice 2 so music21's internal
@@ -635,11 +800,12 @@ def _render_musicxml_bytes(
         s.insert(0, part)
         piano_parts.append(part)
 
-    # Bind the two PartStaffs into a braced grand staff. music21 detects
-    # the StaffGroup and collapses them into one ``<part>`` with
-    # ``<staves>2</staves>`` in the MusicXML output, with each note
-    # carrying a ``<staff>`` tag so renderers place it on the correct
-    # stave.
+    # Bind the two Parts into a braced grand staff. music21 emits this
+    # as a ``<part-group type="start"><group-symbol>brace</group-symbol>
+    # </part-group>`` wrapper in ``<part-list>``, followed by two
+    # ``<part>`` elements — one for RH, one for LH. No ``<staves>`` tag,
+    # no per-note ``<staff>`` tag; clef lives in each part's own
+    # measure-1 ``<attributes>`` block.
     s.insert(
         0,
         music21.layout.StaffGroup(
@@ -682,7 +848,7 @@ def _render_musicxml_bytes(
         # deep-copies the score and runs ``makeNotation`` again on every part.
         # That second pass can emit tuplets MusicXML cannot encode (e.g. a
         # ``2048th`` normal-type) even after our per-part cleanup. We already
-        # called ``makeNotation`` on each ``PartStaff`` above — export the
+        # called ``makeNotation`` on each ``Part`` above — export the
         # score as-is. (Requires a well-formed ``Score``; see GeneralObjectExporter.)
         s.write("musicxml", fp=str(tmp_path), makeNotation=False)
         raw = tmp_path.read_bytes()
@@ -692,11 +858,244 @@ def _render_musicxml_bytes(
         tmp_path.unlink(missing_ok=True)
 
 
-def _sanitize_musicxml_for_osmd(raw: bytes) -> bytes:
-    """Post-process music21 MusicXML to fix OSMD compatibility issues.
+def _clear_part_names(raw: bytes) -> bytes:
+    """Clear ``<part-name>`` text and normalise UUID-based ``id`` attributes
+    in ``<score-part>`` / ``<part>`` entries.
 
-    Two mechanical fixups remain after PR-9 (source-level ``divisions=12``)
-    and PR-10 (Voice sub-streams for 2-voice preservation):
+    music21 populates ``<part-name>`` with its internal part identifier
+    when no explicit ``partName`` is set on the ``Part`` object, and
+    stamps a UUID (e.g. ``P656136d3be63a1d6…``) as the ``id`` attribute
+    on both ``<score-part>`` and ``<part>`` even when a clean ``id`` was
+    passed to the ``Part()`` constructor.  OSMD uses ``<group-name>``
+    from the brace ``<part-group>`` as the primary label, but falls back
+    to the ``<score-part id>`` when ``<part-name>`` is empty — rendering
+    it as *"Instr. P656136d…"*.  Setting the part name to ``"Piano"``
+    and renaming the ids to ``P1``, ``P2``, … gives both staves a clean
+    label that matches the brace group name.
+    """
+    import xml.etree.ElementTree as ET  # noqa: PLC0415
+
+    root = ET.fromstring(raw)
+
+    # Build a map from old UUID-based ids → clean sequential ids.
+    part_list = root.find("part-list")
+    id_remap: dict[str, str] = {}
+    if part_list is not None:
+        for idx, score_part in enumerate(part_list.findall("score-part"), start=1):
+            old_id = score_part.get("id", "")
+            new_id = f"P{idx}"
+            id_remap[old_id] = new_id
+            score_part.set("id", new_id)
+
+            part_name = score_part.find("part-name")
+            if part_name is not None:
+                part_name.text = "Piano"
+
+            # Also clear <instrument-name> inside <score-instrument> —
+            # another source of UUID labels in some OSMD versions.
+            for si in score_part.findall("score-instrument"):
+                old_si_id = si.get("id", "")
+                if old_si_id:
+                    si.set("id", old_si_id.replace(old_id, new_id))
+                instr_name = si.find("instrument-name")
+                if instr_name is not None:
+                    instr_name.text = ""
+
+            # Update <midi-instrument> references too.
+            for mi in score_part.findall("midi-instrument"):
+                old_mi_id = mi.get("id", "")
+                if old_mi_id:
+                    mi.set("id", old_mi_id.replace(old_id, new_id))
+
+    # Rename matching <part id="..."> elements.
+    for part in root.findall("part"):
+        old_id = part.get("id", "")
+        if old_id in id_remap:
+            part.set("id", id_remap[old_id])
+
+    prefix_end = raw.find(b"<score-partwise")
+    prefix = raw[:prefix_end] if prefix_end > 0 else b""
+    body = ET.tostring(root, encoding="utf-8", xml_declaration=False)
+    return prefix + body
+
+
+def _fix_voice_collision_chord_tags(raw: bytes) -> bytes:
+    """Add missing ``<chord/>`` tags when voice remapping creates duplicate
+    ``(voice, onset)`` positions within the same measure.
+
+    ``_remap_voices_per_staff`` collapses voice 3 → voice 2 so OSMD's
+    VexFlow backend never sees ``voice ≥ 3``.  When the original score
+    had three simultaneous pitches — e.g. a triad where music21 assigns
+    voice 1 = root, voice 2 = third, voice 3 = fifth — after remapping
+    both the third and fifth land in voice 2 at the same global onset
+    positions.  Without ``<chord/>`` tags OSMD treats them sequentially
+    and the notes pile on top of each other (the "note collision"
+    artefact in the spec).
+
+    Fix: for each measure walk the full note / backup / forward sequence
+    while tracking a **global time cursor** (MusicXML has one shared
+    position counter; ``<backup>`` rewinds it for all voices).  If two
+    non-rest notes in the same voice land at the same global onset, the
+    second one is a chord note that must carry ``<chord/>``.  The
+    measure is also restructured so that chord-mates are adjacent in the
+    serialised XML (required by the MusicXML spec — ``<chord/>`` means
+    "simultaneous with the immediately preceding note").
+    """
+    import xml.etree.ElementTree as ET  # noqa: PLC0415
+    from collections import defaultdict  # noqa: PLC0415
+
+    root = ET.fromstring(raw)
+    rewrites = 0
+
+    for part in root.findall("part"):
+        for measure in part.findall("measure"):
+            elem_list = list(measure)
+
+            # --- Pass 1: compute global onset for each note element ---
+            global_pos = 0
+            last_onset = 0  # onset of the most recent non-chord note
+            note_data: list[tuple[int, int, str, int, ET.Element, bool]] = []
+            # (elem_index, onset_divisions, voice, duration, element, is_rest)
+
+            for i, el in enumerate(elem_list):
+                if el.tag == "note":
+                    is_grace = el.find("grace") is not None
+                    if is_grace:
+                        # Grace notes are decorative; exclude from collision detection.
+                        # They stay in the element list but are not tracked.
+                        continue
+                    is_chord = el.find("chord") is not None
+                    dur = int(el.findtext("duration") or 0)
+                    v_el = el.find("voice")
+                    v = (v_el.text if v_el is not None else "1") or "1"
+                    is_rest = el.find("rest") is not None
+                    # Bug fix: chord notes share the onset of the preceding
+                    # non-chord note. Using global_pos here would be wrong
+                    # because global_pos has already been advanced by the
+                    # preceding note's duration.
+                    onset = last_onset if is_chord else global_pos
+                    note_data.append((i, onset, v, dur, el, is_rest))
+                    if not is_chord:
+                        last_onset = global_pos
+                        global_pos += dur
+                elif el.tag == "backup":
+                    global_pos = max(0, global_pos - int(el.findtext("duration") or 0))
+                    last_onset = global_pos
+                elif el.tag == "forward":
+                    global_pos += int(el.findtext("duration") or 0)
+                    last_onset = global_pos
+
+            # --- Pass 2: detect (voice, onset) collisions ---
+            voice_onset_counts: dict[tuple[str, int], int] = {}
+            for _, onset, voice, _, el, is_rest in note_data:
+                if not is_rest and el.find("chord") is None:
+                    key = (voice, onset)
+                    voice_onset_counts[key] = voice_onset_counts.get(key, 0) + 1
+
+            if not any(v > 1 for v in voice_onset_counts.values()):
+                continue  # no collision in this measure
+
+            rewrites += 1
+
+            # --- Pass 3: restructure measure ---
+            # Keep non-note/backup/forward elements (attributes, directions,
+            # barlines) in their original positions at the front.
+            # NOTE: mid-measure <direction> elements and grace notes are
+            # relocated to the front of the rebuilt measure.  In practice
+            # music21 places both at measure boundaries, so this doesn't
+            # affect current output.  A future improvement could track
+            # their original positions and re-interleave them.
+            static_elems = [
+                el for el in elem_list
+                if el.tag not in ("note", "backup", "forward")
+                or (el.tag == "note" and el.find("grace") is not None)
+            ]
+
+            # Group notes by voice, sort each group by onset.
+            voice_note_groups: dict[str, list[tuple[int, int, ET.Element, bool]]] = (
+                defaultdict(list)
+            )
+            for _, onset, voice, dur, el, is_rest in note_data:
+                voice_note_groups[voice].append((onset, dur, el, is_rest))
+            for v_notes in voice_note_groups.values():
+                v_notes.sort(key=lambda x: x[0])
+
+            # Clear and rebuild the measure.
+            for el in list(measure):
+                measure.remove(el)
+            for el in static_elems:
+                measure.append(el)
+
+            sorted_voices = sorted(voice_note_groups.keys())
+            first_voice = True
+            voice_ends: dict[str, int] = {}
+
+            for voice_id in sorted_voices:
+                if not first_voice:
+                    # Back up to start of this voice's content.
+                    backup_amt = max(voice_ends.values()) if voice_ends else 0
+                    if backup_amt > 0:
+                        b_el = ET.Element("backup")
+                        ET.SubElement(b_el, "duration").text = str(backup_amt)
+                        measure.append(b_el)
+                else:
+                    first_voice = False
+
+                # Within each voice, group by onset and emit chord-tagged pairs.
+                by_onset: dict[int, list[tuple[int, ET.Element, bool]]] = defaultdict(list)
+                for onset, dur, el, is_rest in voice_note_groups[voice_id]:
+                    by_onset[onset].append((dur, el, is_rest))
+
+                cur_end = 0
+                for onset in sorted(by_onset.keys()):
+                    notes_at_onset = by_onset[onset]
+                    # Bug fix: only the first *pitched* note at an onset is the
+                    # "anchor"; rests don't count. Without this, a rest at an
+                    # onset would prevent the following pitched note from being
+                    # recognised as the anchor, wrongly giving it <chord/>.
+                    first_pitched_seen = False
+                    for dur, el, is_rest in notes_at_onset:
+                        # Remove any stale <chord/> tag; we will re-add as needed.
+                        chord_el = el.find("chord")
+                        if chord_el is not None:
+                            el.remove(chord_el)
+                        if is_rest:
+                            measure.append(el)
+                            continue
+                        if first_pitched_seen:
+                            ET.SubElement(el, "chord")  # appends at end
+                            # MusicXML spec requires <chord/> to be the *first*
+                            # child of <note>.  Move it there.
+                            chord_tag = el.find("chord")
+                            if chord_tag is not None:
+                                el.remove(chord_tag)
+                                el.insert(0, chord_tag)
+                        else:
+                            first_pitched_seen = True
+                        measure.append(el)
+                    # Duration of this onset slot = first pitched note's dur
+                    # (rests may precede pitched notes at the same onset).
+                    anchor_dur = next(
+                        (d for d, _, is_r in notes_at_onset if not is_r),
+                        notes_at_onset[0][0],
+                    )
+                    cur_end = onset + anchor_dur
+
+                voice_ends[voice_id] = cur_end
+
+    if rewrites == 0:
+        return raw
+
+    prefix_end = raw.find(b"<score-partwise")
+    prefix = raw[:prefix_end] if prefix_end > 0 else b""
+    body = ET.tostring(root, encoding="utf-8", xml_declaration=False)
+    return prefix + body
+
+
+def _sanitize_musicxml_for_osmd(raw: bytes) -> bytes:
+    """Post-process music21 MusicXML to fix OSMD + MuseScore issues.
+
+    Five mechanical fixups after music21 export:
 
     1. ``<voice>0</voice>`` → ``<voice>1</voice>`` — music21 emits 0 when
        a note isn't wrapped in a ``Voice`` sub-stream and the part has
@@ -707,19 +1106,157 @@ def _sanitize_musicxml_for_osmd(raw: bytes) -> bytes:
        produces more than two voices per hand. OSMD's VexFlow backend
        crashes (``parentVoiceEntry undefined``) on 3+ voices per part;
        clamping to 2 is the minimum-damage fallback.
+    3. Voice-collision chord-tag fix — when step 2 collapses e.g. voice 3
+       → voice 2, both sets of notes land at the same global onset
+       positions without ``<chord/>`` tags, causing OSMD to render them
+       sequentially ("note stacking").  ``_fix_voice_collision_chord_tags``
+       detects the collision, reorders the notes so chord-mates are
+       adjacent, and adds ``<chord/>`` to the second note at each onset.
+    4. Tie-chain voice alignment — music21 can reassign a bar-crossing
+       note's tie continuation to a different voice in the next
+       measure (see ``_split_bar_crossing_notes`` for the upstream
+       attempt). MuseScore 4 flags mismatched tie-start / tie-stop
+       voices as a corrupt score. Walk the XML part by part, track
+       open ties by ``(step, octave, alter)``, and rewrite the
+       tie-stop's ``<voice>`` to match the tie-start's voice. The
+       voice reassignment only affects the single tied note;
+       surrounding voice content keeps its tags.
+    5. ``<part-name>`` clearing — defense-in-depth to ensure per-staff
+       instrument labels stay empty. The ``<part-group>`` brace already
+       carries ``<group-name>Piano</group-name>``; non-empty per-part
+       names would render as "Instr. P-RH" / "Instr. P-LH" in OSMD.
     """
     text = raw.decode("utf-8")
 
-    def _clamp(match: re.Match[str]) -> str:
-        n = int(match.group(1))
-        if n == 0:
-            return "<voice>1</voice>"
-        if n > 2:
-            return "<voice>2</voice>"
-        return match.group(0)
+    # MusicXML voice=0 is invalid and OSMD rejects it outright.
+    text = re.sub(r"<voice>0</voice>", "<voice>1</voice>", text)
+    remapped = _remap_voices_per_staff(text.encode("utf-8"))
+    chord_fixed = _fix_voice_collision_chord_tags(remapped)
+    cleared = _clear_part_names(chord_fixed)
+    return _align_tie_chain_voices(cleared)
 
-    text = re.sub(r"<voice>(\d+)</voice>", _clamp, text)
-    return text.encode("utf-8")
+
+def _remap_voices_per_staff(raw: bytes) -> bytes:
+    """Renumber voice tags per ``<part>`` so each part uses ``{1, 2}``.
+
+    Legacy contract: music21's exporter numbers voices globally within
+    a ``<part>`` — a grand staff with two voices per hand gets voices
+    ``{1..4}``. OSMD's VexFlow backend crashes on ``voice ≥ 3``, so we
+    compress to ``{1, 2}`` per grouping unit.
+
+    Under the current two-part / brace encoding there is no ``<staff>``
+    element (each hand is its own ``<part>``), so the function's
+    ``staff = staff_el.text if staff_el is not None else cur_staff``
+    fallback collapses every note to the synthetic staff ``"1"`` — which
+    is exactly the per-part scope we want. The function continues to
+    work correctly; the ``per_staff`` name is historical.
+
+    Keeps defense-in-depth for any future path (e.g. condense) that may
+    emit 3+ voices on a hand. Safe to keep; cheap to run.
+    """
+    import xml.etree.ElementTree as ET  # noqa: PLC0415
+
+    root = ET.fromstring(raw)
+
+    for part in root.findall("part"):
+        for measure in part.findall("measure"):
+            # Collect the voices used on each staff in this measure.
+            voices_by_staff: dict[str, list[str]] = {}
+            cur_staff = "1"
+            for note in measure.findall("note"):
+                staff_el = note.find("staff")
+                staff = (staff_el.text if staff_el is not None else None) or cur_staff
+                cur_staff = staff
+                voice_el = note.find("voice")
+                if voice_el is None:
+                    continue
+                v = voice_el.text or "1"
+                slot = voices_by_staff.setdefault(staff, [])
+                if v not in slot:
+                    slot.append(v)
+
+            # Build the per-staff remap: first seen voice → "1", second
+            # → "2", and clamp everything beyond that to "2" (OSMD
+            # can't handle 3 voices on one staff anyway).
+            remap: dict[tuple[str, str], str] = {}
+            for staff, vs in voices_by_staff.items():
+                for idx, v in enumerate(vs):
+                    remap[(staff, v)] = str(min(idx + 1, 2))
+
+            # Apply the remap.
+            cur_staff = "1"
+            for note in measure.findall("note"):
+                staff_el = note.find("staff")
+                staff = (staff_el.text if staff_el is not None else None) or cur_staff
+                cur_staff = staff
+                voice_el = note.find("voice")
+                if voice_el is None:
+                    continue
+                v = voice_el.text or "1"
+                new_v = remap.get((staff, v))
+                if new_v is not None and new_v != v:
+                    voice_el.text = new_v
+
+    prefix_end = raw.find(b"<score-partwise")
+    prefix = raw[:prefix_end] if prefix_end > 0 else b""
+    body = ET.tostring(root, encoding="utf-8", xml_declaration=False)
+    return prefix + body
+
+
+def _align_tie_chain_voices(raw: bytes) -> bytes:
+    """Rewrite tie-stop / tie-continue notes to match the voice of the
+    preceding tie-start for the same pitch within the same ``<part>``.
+
+    music21 sometimes assigns a bar-crossing note's continuation to a
+    different voice in the next measure. After the voice-clamp step
+    this shows up as tie-start on voice 1, tie-stop on voice 2 — which
+    MuseScore 4 reports as a dangling tie corruption. We walk the XML
+    part by part (ties never cross hands), tracking open ties by
+    ``(step, octave, alter)``, and rewrite the tie-stop's ``<voice>``
+    tag to match the tie-start's voice.
+    """
+    import xml.etree.ElementTree as ET  # noqa: PLC0415 — only needed on this path
+
+    parser = ET.XMLParser()
+    root = ET.fromstring(raw, parser=parser)
+
+    rewrites = 0
+    for part in root.findall("part"):
+        # Ties never cross hands. Reset the open-tie map for each <part>
+        # so an RH tie-start can't "match" an LH same-pitch attack in
+        # the two-part encoding (where <staff> tags are absent and the
+        # old (pitch, staff) key degenerated to (pitch,)).
+        open_ties: dict[tuple[str, str, str], str] = {}
+        for measure in part.findall("measure"):
+            for note in measure.findall("note"):
+                pitch = note.find("pitch")
+                if pitch is None:
+                    continue
+                key = (
+                    pitch.findtext("step") or "",
+                    pitch.findtext("octave") or "",
+                    pitch.findtext("alter") or "0",
+                )
+                voice_el = note.find("voice")
+                voice = (voice_el.text if voice_el is not None else None) or "1"
+                for tie in note.findall("tie"):
+                    typ = tie.get("type")
+                    if typ == "start":
+                        open_ties[key] = voice
+                    elif typ == "stop":
+                        expected = open_ties.pop(key, None)
+                        if expected is not None and expected != voice and voice_el is not None:
+                            voice_el.text = expected
+                            rewrites += 1
+
+    if rewrites == 0:
+        return raw
+
+    # Preserve the original XML declaration + DOCTYPE that ElementTree drops.
+    prefix_end = raw.find(b"<score-partwise")
+    prefix = raw[:prefix_end] if prefix_end > 0 else b""
+    body = ET.tostring(root, encoding="utf-8", xml_declaration=False)
+    return prefix + body
 
 
 # ---------------------------------------------------------------------------

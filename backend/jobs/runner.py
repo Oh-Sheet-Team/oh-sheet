@@ -51,6 +51,7 @@ STEP_TO_TASK: dict[str, str] = {
     "condense": "condense.run",
     "transform": "transform.run",
     "humanize": "humanize.run",
+    "refine": "refine.run",
     "engrave": "engrave.run",
 }
 
@@ -387,22 +388,60 @@ class PipelineRunner:
                     output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.stage_timeout_sec)
                     perf_dict = self.blob_store.get_json(output_uri)
 
+                elif step == "refine":
+                    if perf_dict is not None:
+                        refine_envelope = {
+                            "payload": perf_dict,
+                            "payload_type": "HumanizedPerformance",
+                            "title_hint": bundle.metadata.title,
+                            "artist_hint": bundle.metadata.artist,
+                            "filename_hint": bundle.metadata.source_filename,
+                        }
+                    elif score_dict is not None:
+                        refine_envelope = {
+                            "payload": score_dict,
+                            "payload_type": "PianoScore",
+                            "title_hint": bundle.metadata.title,
+                            "artist_hint": bundle.metadata.artist,
+                            "filename_hint": bundle.metadata.source_filename,
+                        }
+                    else:
+                        raise RuntimeError(
+                            "refine stage requires a score or performance — none was produced"
+                        )
+                    payload_uri = self._serialize_stage_input(job_id, step, refine_envelope)
+                    output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.stage_timeout_sec)
+                    refined = self.blob_store.get_json(output_uri)
+                    if refined["payload_type"] == "HumanizedPerformance":
+                        perf_dict = refined["payload"]
+                    else:
+                        score_dict = refined["payload"]
+
                 elif step == "engrave":
+                    # Title/composer precedence: refined ScoreMetadata > InputMetadata > defaults.
+                    refined_md: dict | None = None
+                    if perf_dict is not None:
+                        refined_md = perf_dict.get("score", {}).get("metadata") if isinstance(perf_dict, dict) else None
+                    elif score_dict is not None:
+                        refined_md = score_dict.get("metadata") if isinstance(score_dict, dict) else None
+                    resolved_title = (refined_md or {}).get("title") or title
+                    resolved_composer = (refined_md or {}).get("composer") or composer
+
                     if perf_dict is not None:
                         engrave_envelope = {
                             "payload": perf_dict,
                             "payload_type": "HumanizedPerformance",
                             "job_id": job_id,
-                            "title": title,
-                            "composer": composer,
+                            "title": resolved_title,
+                            "composer": resolved_composer,
                         }
                     elif score_dict is not None:
                         engrave_envelope = {
                             "payload": score_dict,
                             "payload_type": "PianoScore",
                             "job_id": job_id,
-                            "title": title,
-                            "composer": composer,
+                            "title": resolved_title,
+                            "composer": resolved_composer,
                         }
                     else:
                         raise RuntimeError("engrave stage requires a score or performance — none was produced")

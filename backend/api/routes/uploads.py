@@ -58,6 +58,7 @@ async def upload_audio(
         duration_sec=0.0,
         channels=2,
         content_hash=digest,
+        source_filename=file.filename,
     )
 
 
@@ -91,4 +92,9 @@ async def upload_midi(
     digest = hashlib.sha256(data).hexdigest()
     uri = blob.put_bytes(f"uploads/midi/{digest}.mid", data)
 
-    return RemoteMidiFile(uri=uri, ticks_per_beat=480, content_hash=digest)
+    return RemoteMidiFile(
+        uri=uri,
+        ticks_per_beat=480,
+        content_hash=digest,
+        source_filename=file.filename,
+    )

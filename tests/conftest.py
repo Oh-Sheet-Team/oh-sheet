@@ -12,6 +12,7 @@ import backend.workers.humanize  # noqa: F401
 
 # Import monolith worker modules so their tasks are registered on the celery_app.
 import backend.workers.ingest  # noqa: F401
+import backend.workers.refine  # noqa: F401
 import backend.workers.transcribe  # noqa: F401
 import backend.workers.transform  # noqa: F401
 from backend.api import deps
@@ -70,6 +71,19 @@ def celery_eager_mode():
     yield
     _celery_app.conf.task_always_eager = False
     _celery_app.conf.task_eager_propagates = False
+
+
+@pytest.fixture(autouse=True)
+def disable_real_refine_llm(monkeypatch):
+    """Null out the Anthropic API key for every test.
+
+    No test may hit the real API. The service's fallback path (no key →
+    raise → caught → pass-through with warning) is exactly what bare
+    pipeline tests need. Tests that want to exercise the merge logic
+    construct ``RefineService(..., client=fake)`` directly — that path
+    bypasses the key check entirely.
+    """
+    monkeypatch.setattr(settings, "anthropic_api_key", None)
 
 
 @pytest.fixture
