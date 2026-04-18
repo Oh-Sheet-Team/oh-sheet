@@ -7,26 +7,6 @@ from backend.config import settings
 from backend.contracts import RemoteAudioFile
 
 
-@pytest.fixture(autouse=True)
-def _title_lookup_needs_tunechat(monkeypatch):
-    """Infrastructure fixture — do not rely on its name in test code.
-
-    ``POST /v1/jobs`` rejects title_lookup submissions when
-    ``tunechat_enabled`` is False (that path can't produce a score
-    without a fallback engraver). Several tests in this file exercise
-    title-only job creation, cover_search flags, and YouTube URL flows
-    that all land on the title_lookup code path. Flipping the toggle
-    on by default lets those assertions run; tests that specifically
-    want to exercise the rejection path override locally with
-    ``monkeypatch.setattr(settings, "tunechat_enabled", False)``.
-
-    CAUTION: adding a non-title-lookup test to this file inherits the
-    enabled default silently. If you're asserting behavior that
-    depends on tunechat being off, opt out explicitly.
-    """
-    monkeypatch.setattr(settings, "tunechat_enabled", True)
-
-
 def _upload_audio(client):
     return client.post(
         "/v1/uploads/audio",
@@ -79,7 +59,7 @@ def test_create_job_from_audio_runs_to_completion(client):
     assert status is not None
     assert status["status"] == "succeeded", status
     assert status["result"] is not None
-    # pdf_uri is intentionally empty — the ML engraver returns MusicXML only.
+    assert status["result"]["pdf_uri"].startswith("file://")
     assert status["result"]["musicxml_uri"]
     assert status["result"]["humanized_midi_uri"]
 
@@ -141,16 +121,6 @@ def test_create_job_title_lookup_only(client):
     assert response.status_code == 202
     job = response.json()
     assert job["variant"] == "full"
-
-
-def test_create_job_title_lookup_rejected_when_tunechat_disabled(client, monkeypatch):
-    """title_lookup requires TuneChat — when disabled, fail fast at the
-    route boundary instead of burning ingest/transcribe/arrange/humanize
-    to hit the hard-fail guard in runner.py."""
-    monkeypatch.setattr(settings, "tunechat_enabled", False)
-    response = client.post("/v1/jobs", json={"title": "Yesterday"})
-    assert response.status_code == 400
-    assert "tunechat" in response.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------

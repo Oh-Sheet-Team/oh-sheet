@@ -28,7 +28,9 @@ dev = [
     "httpx>=0.26",
     "ruff>=0.4",
     "mypy>=1.10",
-    # Available for MusicXML inspection in tests and scripts.
+    # Engrave-evaluation harness: lxml drives the xpath lints that check
+    # the MusicXML music21 emits (see tests/test_engrave_quality.py and
+    # docs/engrave-improvement-plan.md Phase 0.2 Layer L2).
     "lxml>=5.0",
 ]
 youtube = [
@@ -197,3 +199,7 @@ warn_return_any = false
 warn_unused_configs = true
 disallow_untyped_defs = false
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "backend.services.engrave"
+disable_error_code = ["union-attr", "arg-type"]

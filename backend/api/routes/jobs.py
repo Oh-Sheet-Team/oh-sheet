@@ -99,25 +99,6 @@ async def create_job(
             detail="Provide one of: audio, midi, or title (for title-lookup).",
         )
 
-    # title_lookup jobs resolve through TuneChat upstream — they never
-    # reach the ML engraver. When TuneChat is disabled there's no path
-    # that can produce a score for these jobs, so reject at creation
-    # time rather than burning ~1 minute of ingest/transcribe/arrange/
-    # humanize only to hard-fail at engrave.
-    # Explicit title check (not just "neither audio nor midi") so a
-    # future source type doesn't silently classify as title_lookup.
-    is_title_lookup = (
-        body.audio is None and body.midi is None and body.title is not None
-    )
-    if is_title_lookup and not settings.tunechat_enabled:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "title-lookup jobs require TuneChat, which is currently disabled. "
-                "Upload the audio or MIDI file directly."
-            ),
-        )
-
     # Integrity: the audio / midi URI must point to a real blob in
     # storage. Without this check a client could forge a Remote*File
     # with an arbitrary URI and the pipeline would "succeed" by

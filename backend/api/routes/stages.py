@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from backend.api.deps import get_blob_store
 from backend.contracts import (
     SCHEMA_VERSION,
+    EngravedOutput,
     HumanizedPerformance,
     InputBundle,
     OrchestratorCommand,
@@ -30,6 +31,7 @@ from backend.contracts import (
 )
 from backend.services.arrange import ArrangeService
 from backend.services.condense import CondenseService
+from backend.services.engrave import EngraveService
 from backend.services.humanize import HumanizeService
 from backend.services.ingest import IngestService
 from backend.services.transcribe import TranscribeService
@@ -216,3 +218,27 @@ async def stage_humanize(
     )
 
 
+@router.post("/stages/engrave", response_model=WorkerResponse)
+async def stage_engrave(
+    cmd: OrchestratorCommand,
+    blob: Annotated[LocalBlobStore, Depends(get_blob_store)],
+) -> WorkerResponse:
+    engrave = EngraveService(blob_store=blob)
+
+    # Engrave needs the job_id (for blob keying) and title/composer; we
+    # forward what's available from the envelope here.
+    async def coro(payload: HumanizedPerformance) -> EngravedOutput:
+        return await engrave.run(
+            payload,
+            job_id=cmd.job_id,
+            title="Untitled",
+            composer="Unknown",
+        )
+
+    return await _run_stage(
+        cmd,
+        blob,
+        input_model=HumanizedPerformance,
+        coro=coro,
+        output_key="engraved.json",
+    )

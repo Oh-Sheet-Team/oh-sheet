@@ -43,12 +43,6 @@ services:
       OHSHEET_TUNECHAT_ENABLED: ${OHSHEET_TUNECHAT_ENABLED:-false}
       OHSHEET_TUNECHAT_URL: ${OHSHEET_TUNECHAT_URL:-}
       OHSHEET_TUNECHAT_API_KEY: ${OHSHEET_TUNECHAT_API_KEY:-}
-      # Engraver service URL — backend.jobs.runner (living in this container)
-      # always routes audio/midi engrave jobs to this URL. No local fallback.
-      # REQUIRED: ``${VAR:?msg}`` makes docker compose refuse to start when
-      # the variable is unset or empty so a missing deploy-var can't silently
-      # route every prod engrave to localhost:8080 and black-hole the job.
-      OHSHEET_ENGRAVER_SERVICE_URL: ${OHSHEET_ENGRAVER_SERVICE_URL:?OHSHEET_ENGRAVER_SERVICE_URL must be set (no fallback engraver in prod)}
       # YouTube bot-detection bypass. deploy.yml writes the
       # OHSHEET_YTDLP_COOKIES secret to ~/oh-sheet/youtube-cookies.txt
       # on the VM; this path is where the mounted file lands inside the
@@ -175,9 +169,19 @@ services:
       redis:
         condition: service_healthy
 
-  # worker-engrave has been retired. The engrave stage now runs inline in
-  # the orchestrator as an HTTP call to oh-sheet-ml-pipeline (see
-  # OHSHEET_ENGRAVER_SERVICE_URL on the orchestrator service).
+  worker-engrave:
+    image: ${IMAGE}
+    command: celery -A backend.workers.celery_app worker -Q engrave -c 1 --loglevel=warning
+    restart: unless-stopped
+    environment:
+      OHSHEET_BLOB_ROOT: /app/blob
+      OHSHEET_REDIS_URL: redis://redis:6379/0
+      OHSHEET_ML_API_URL: ${OHSHEET_ML_API_URL:-}
+    volumes:
+      - blob-data:/app/blob
+    depends_on:
+      redis:
+        condition: service_healthy
 
   caddy:
     image: caddy:2-alpine

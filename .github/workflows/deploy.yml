@@ -96,10 +96,7 @@ jobs:
           OHSHEET_TUNECHAT_API_KEY: ${{ secrets.OHSHEET_TUNECHAT_API_KEY }}
           # Anthropic API — used by worker-refine for LLM metadata enrichment.
           OHSHEET_ANTHROPIC_API_KEY: ${{ secrets.OHSHEET_ANTHROPIC_API_KEY }}
-          # Base URL of oh-sheet-ml-pipeline engraver service. The engrave
-          # stage always hits this URL — there is no local fallback — so
-          # operators rely on service health, not a toggle.
-          OHSHEET_ENGRAVER_SERVICE_URL: ${{ vars.OHSHEET_ENGRAVER_SERVICE_URL }}
+          OHSHEET_ML_API_URL: ${{ vars.OHSHEET_ML_API_URL }}
           # YouTube bot-detection bypass. Contents of the
           # OHSHEET_YTDLP_COOKIES secret (a Netscape-format cookies.txt
           # exported from a logged-in browser session) gets written to
@@ -132,7 +129,7 @@ jobs:
           echo "OHSHEET_TUNECHAT_API_KEY=${OHSHEET_TUNECHAT_API_KEY}" >> /tmp/.env
           # Anthropic — worker-refine LLM metadata enrichment.
           echo "OHSHEET_ANTHROPIC_API_KEY=${OHSHEET_ANTHROPIC_API_KEY}" >> /tmp/.env
-          echo "OHSHEET_ENGRAVER_SERVICE_URL=${OHSHEET_ENGRAVER_SERVICE_URL}" >> /tmp/.env
+          echo "OHSHEET_ML_API_URL=${OHSHEET_ML_API_URL}" >> /tmp/.env
 
           # Write the YouTube cookies file to /tmp and SCP it to the VM.
           # Always write (never conditional) so the bind-mount in

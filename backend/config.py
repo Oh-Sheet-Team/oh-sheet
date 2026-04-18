@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     # not appear when you run the API server.
     log_level: str = "INFO"
 
+    # ---- ML inference API (engraver replacement) ----------------------------
+    # When set, the engrave stage POSTs the rendered MIDI to this URL's
+    # /transcribe endpoint and uses the returned MusicXML instead of the
+    # local music21 render. Falls back to music21 on error.
+    ml_api_url: str | None = None
+    ml_api_timeout_sec: int = 60
+
     # ---- Basic Pitch transcription -----------------------------------------
     # Tunable knobs passed through to basic_pitch.inference.predict(). Defaults
     # mirror upstream (basic_pitch.constants.DEFAULT_*). The ONNX model ships
@@ -596,17 +603,6 @@ class Settings(BaseSettings):
     tunechat_url: str = "http://localhost:3000"
     tunechat_api_key: str = ""
     tunechat_timeout_sec: int = 300
-
-    # ---- ML engraver service ----------------------------------------------
-    # audio_upload and midi_upload jobs always route their engraving through
-    # the oh-sheet-ml-pipeline HTTP service (POST {url}/engrave, MIDI bytes →
-    # MusicXML bytes). There is no local fallback — an outage here fails the
-    # job. title_lookup jobs are expected to resolve upstream via TuneChat;
-    # if they reach the engrave stage, the job hard-fails with a clear error.
-    #
-    # Env: OHSHEET_ENGRAVER_SERVICE_URL, OHSHEET_ENGRAVER_SERVICE_TIMEOUT_SEC
-    engraver_service_url: str = "http://localhost:8080"
-    engraver_service_timeout_sec: int = 60
 
     # ── YouTube bot-detection bypass (yt-dlp cookies) ─────────────────
     # YouTube periodically flags known data-center IPs (GCP, AWS, etc.)
