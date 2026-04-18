@@ -69,19 +69,28 @@ def test_no_op_when_file_empty(
     assert "cookiefile" not in opts, "empty file should be a no-op"
 
 
-def test_sets_cookiefile_when_file_nonempty(
+def test_sets_cookiefile_to_writable_copy_not_source(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    # Netscape cookies.txt starts with a header comment. Any non-zero
-    # content counts; apply_ytdlp_cookies doesn't validate format.
+    # The source file is bind-mounted :ro in prod, so we copy it to
+    # a writable tmp path and point yt-dlp at the copy — NOT the
+    # source directly. This test enforces that contract: cookiefile
+    # must differ from the source path, and its contents must match.
     cookies = tmp_path / "cookies.txt"
-    cookies.write_text("# Netscape HTTP Cookie File\n")
-    assert cookies.stat().st_size > 0
+    cookies.write_text("# Netscape HTTP Cookie File\nfoo\tbar\n")
     _patch_path(monkeypatch, str(cookies))
 
     opts: dict = {}
     apply_ytdlp_cookies(opts)
-    assert opts.get("cookiefile") == str(cookies)
+
+    assert "cookiefile" in opts, "non-empty file should activate cookies"
+    copy_path = Path(opts["cookiefile"])
+    assert copy_path != cookies, (
+        "cookiefile must point at a writable copy, not the :ro source"
+    )
+    assert copy_path.read_text() == cookies.read_text(), (
+        "copy must mirror source contents"
+    )
 
 
 def test_preserves_existing_opts(
@@ -97,7 +106,34 @@ def test_preserves_existing_opts(
     apply_ytdlp_cookies(opts)
     assert opts["quiet"] is True
     assert opts["socket_timeout"] == 15
-    assert opts["cookiefile"] == str(cookies)
+    # cookiefile now points at a tmp copy, not the source itself.
+    assert "cookiefile" in opts
+    assert Path(opts["cookiefile"]).read_text() == "x"
+
+
+def test_no_op_when_copy_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # If /tmp is full or unwritable, apply_ytdlp_cookies must not
+    # crash the job — it logs and runs yt-dlp anonymously.
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("x")
+    _patch_path(monkeypatch, str(cookies))
+
+    import shutil as _shutil
+    from backend.services import _ytdlp_utils
+
+    def _fail(*args: object, **kwargs: object) -> None:
+        raise OSError("simulated copyfile failure")
+
+    monkeypatch.setattr(_ytdlp_utils.shutil, "copyfile", _fail)
+    # Also patch the shutil alias used at call-site module scope, in
+    # case the re-export resolves differently.
+    monkeypatch.setattr(_shutil, "copyfile", _fail)
+
+    opts: dict = {}
+    apply_ytdlp_cookies(opts)
+    assert "cookiefile" not in opts
 
 
 def test_stat_raising_oserror_is_graceful(
