@@ -98,6 +98,29 @@ mode, and it's what you hit on any new deployment before cookies are
 provisioned. Users may see the bot error intermittently; refresh
 cookies when that happens.
 
+## Adding yt-dlp to a new service
+
+The cookies file is bind-mounted into **orchestrator** and
+**worker-ingest** today, because those are the only services that call
+yt-dlp (orchestrator via `cover_search`, worker-ingest via `_download_youtube_sync`).
+
+If a future service adds a yt-dlp call site, it needs three things to
+pick up the cookies:
+
+1. **Bind mount** in `docker-compose.prod.yml` — add
+   `./youtube-cookies.txt:/app/youtube-cookies.txt:ro` to the service's
+   `volumes:` block.
+2. **Env var** — add `OHSHEET_YTDLP_COOKIES_PATH: /app/youtube-cookies.txt`
+   to the service's `environment:` block.
+3. **Helper call** — wherever yt-dlp's `YoutubeDL(opts)` is constructed,
+   call `apply_ytdlp_cookies(opts)` from `backend.services._ytdlp_utils`
+   before the `YoutubeDL(...)` line. The helper is a no-op when cookies
+   aren't present, so the new service stays safe on unprovisioned VMs.
+
+If any of the three is missed, the service runs anonymously and may
+hit the bot-detection wall — silently, because `apply_ytdlp_cookies`
+doesn't raise on missing config.
+
 ## Security
 
 - Cookies are session credentials — anyone with them can act as the
