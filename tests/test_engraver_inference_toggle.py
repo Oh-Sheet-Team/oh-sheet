@@ -111,6 +111,36 @@ async def test_midi_upload_uses_ml_service_when_toggle_on(
 
 
 @pytest.mark.asyncio
+async def test_ml_error_propagates_and_fails_job(
+    runner, engraver_inference_on, monkeypatch,
+):
+    """An MLEngraverError from the client should surface, not silently fall back."""
+    async def raising(midi_bytes: bytes) -> bytes:
+        raise ml_engraver_client.MLEngraverError("simulated outage")
+
+    monkeypatch.setattr(ml_engraver_client, "engrave_midi_via_ml_service", raising)
+
+    bundle = InputBundle(
+        audio=RemoteAudioFile(
+            uri="file:///fake/audio.wav",
+            format="wav",
+            sample_rate=44100,
+            duration_sec=10.0,
+            channels=1,
+        ),
+        metadata=InputMetadata(title="Err Test", artist="Tester", source="audio_upload"),
+    )
+    config = PipelineConfig(variant="audio_upload", enable_refine=False)
+
+    with pytest.raises(ml_engraver_client.MLEngraverError, match="simulated outage"):
+        await runner.run(
+            job_id="toggle-error-001",
+            bundle=bundle,
+            config=config,
+        )
+
+
+@pytest.mark.asyncio
 async def test_toggle_off_keeps_local_engrave(runner, blob, mock_ml_engraver):
     """Default ``engraver_inference=False`` should never touch the ML client."""
     bundle = InputBundle(
