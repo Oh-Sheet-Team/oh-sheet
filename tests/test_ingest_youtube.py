@@ -205,38 +205,14 @@ class TestIngestServiceYoutube:
 # ---------------------------------------------------------------------------
 
 
-def test_youtube_url_job_fails_without_tunechat(client):
+def test_youtube_url_job_rejected_at_creation_without_tunechat(client):
     """Submitting a YouTube URL (title_lookup source) with TuneChat disabled
-    must fail at the engrave stage. There is no heuristic fallback anymore
-    and title_lookup jobs are expected to resolve via TuneChat upstream.
+    is rejected at the /v1/jobs boundary with 400. Previously this would
+    run ingest/transcribe/arrange/humanize and hard-fail at engrave —
+    fail-fast at the route is cheaper.
     """
-    with patch("backend.services.ingest._download_youtube_sync") as mock_dl:
-        mock_dl.return_value = (
-            RemoteAudioFile(
-                uri="file:///tmp/fake.wav",
-                format="wav",
-                sample_rate=44100,
-                duration_sec=60.0,
-                channels=2,
-            ),
-            "Rick Astley - Never Gonna Give You Up",
-            "Rick Astley",
-        )
-
-        resp = client.post("/v1/jobs", json={
-            "title": "https://youtube.com/watch?v=dQw4w9WgXcQ",
-        })
-        assert resp.status_code == 202
-        job = resp.json()
-        assert job["variant"] == "full"
-
-        import time
-        deadline = time.time() + 5
-        status = None
-        while time.time() < deadline:
-            status = client.get(f"/v1/jobs/{job['job_id']}").json()
-            if status["status"] in ("succeeded", "failed"):
-                break
-            time.sleep(0.05)
-
-        assert status["status"] == "failed", status
+    resp = client.post("/v1/jobs", json={
+        "title": "https://youtube.com/watch?v=dQw4w9WgXcQ",
+    })
+    assert resp.status_code == 400
+    assert "tunechat" in resp.json()["detail"].lower()

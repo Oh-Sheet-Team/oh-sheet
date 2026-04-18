@@ -7,6 +7,17 @@ from backend.config import settings
 from backend.contracts import RemoteAudioFile
 
 
+@pytest.fixture(autouse=True)
+def enable_tunechat_for_title_lookup(monkeypatch):
+    """title_lookup jobs now require TuneChat at the route boundary.
+    Enable it by default for this module so existing tests that exercise
+    title_lookup paths continue to land on their real assertions rather
+    than the 400 rejection. Tests that want the rejection path override
+    this locally.
+    """
+    monkeypatch.setattr(settings, "tunechat_enabled", True)
+
+
 def _upload_audio(client):
     return client.post(
         "/v1/uploads/audio",
@@ -121,6 +132,16 @@ def test_create_job_title_lookup_only(client):
     assert response.status_code == 202
     job = response.json()
     assert job["variant"] == "full"
+
+
+def test_create_job_title_lookup_rejected_when_tunechat_disabled(client, monkeypatch):
+    """title_lookup requires TuneChat — when disabled, fail fast at the
+    route boundary instead of burning ingest/transcribe/arrange/humanize
+    to hit the hard-fail guard in runner.py."""
+    monkeypatch.setattr(settings, "tunechat_enabled", False)
+    response = client.post("/v1/jobs", json={"title": "Yesterday"})
+    assert response.status_code == 400
+    assert "tunechat" in response.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------

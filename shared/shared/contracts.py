@@ -348,7 +348,10 @@ class EngravedScoreData(BaseModel):
 class EngravedOutput(BaseModel):
     schema_version: str = SCHEMA_VERSION
     metadata: EngravedScoreData
-    pdf_uri: str
+    # Nullable: the ML engraver returns MusicXML only, so pdf_uri is
+    # ``None`` for the audio/midi-upload path. Legacy consumers that
+    # expected an always-present string should now check for ``None``.
+    pdf_uri: str | None = None
     musicxml_uri: str
     humanized_midi_uri: str
     audio_preview_uri: str | None = None
