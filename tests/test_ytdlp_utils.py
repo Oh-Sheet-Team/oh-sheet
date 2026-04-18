@@ -121,6 +121,7 @@ def test_no_op_when_copy_fails(
     _patch_path(monkeypatch, str(cookies))
 
     import shutil as _shutil
+
     from backend.services import _ytdlp_utils
 
     def _fail(*args: object, **kwargs: object) -> None:
