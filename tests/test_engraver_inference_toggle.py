@@ -22,7 +22,6 @@ from backend.jobs.runner import PipelineRunner
 from backend.services import ml_engraver_client
 from backend.workers.celery_app import celery_app
 
-
 _FAKE_MUSICXML = (
     b'<?xml version="1.0" encoding="UTF-8" standalone="no"?>'
     b'<score-partwise version="3.1"><part id="P1"/></score-partwise>'
