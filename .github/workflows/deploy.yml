@@ -96,7 +96,11 @@ jobs:
           OHSHEET_TUNECHAT_API_KEY: ${{ secrets.OHSHEET_TUNECHAT_API_KEY }}
           # Anthropic API — used by worker-refine for LLM metadata enrichment.
           OHSHEET_ANTHROPIC_API_KEY: ${{ secrets.OHSHEET_ANTHROPIC_API_KEY }}
-          OHSHEET_ML_API_URL: ${{ vars.OHSHEET_ML_API_URL }}
+          # Engraver inference toggle — replaces the retired OHSHEET_ML_API_URL gate.
+          # OHSHEET_ENGRAVER_INFERENCE: bool gate read by backend.jobs.runner.
+          # OHSHEET_ENGRAVER_SERVICE_URL: base URL of oh-sheet-ml-pipeline engraver service.
+          OHSHEET_ENGRAVER_INFERENCE: ${{ vars.OHSHEET_ENGRAVER_INFERENCE }}
+          OHSHEET_ENGRAVER_SERVICE_URL: ${{ vars.OHSHEET_ENGRAVER_SERVICE_URL }}
         run: |
           # Set up SSH
           mkdir -p ~/.ssh
@@ -120,7 +124,8 @@ jobs:
           echo "OHSHEET_TUNECHAT_API_KEY=${OHSHEET_TUNECHAT_API_KEY}" >> /tmp/.env
           # Anthropic — worker-refine LLM metadata enrichment.
           echo "OHSHEET_ANTHROPIC_API_KEY=${OHSHEET_ANTHROPIC_API_KEY}" >> /tmp/.env
-          echo "OHSHEET_ML_API_URL=${OHSHEET_ML_API_URL}" >> /tmp/.env
+          echo "OHSHEET_ENGRAVER_INFERENCE=${OHSHEET_ENGRAVER_INFERENCE}" >> /tmp/.env
+          echo "OHSHEET_ENGRAVER_SERVICE_URL=${OHSHEET_ENGRAVER_SERVICE_URL}" >> /tmp/.env
 
           # Copy compose files to VM (SCP .env to temp name, then atomic mv)
           $SCP docker-compose.prod.yml Caddyfile "${VM_USER}@${VM_HOST}:~/oh-sheet/"
