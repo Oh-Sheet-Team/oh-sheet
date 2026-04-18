@@ -52,35 +52,56 @@ jobs:
       - name: Authorize Docker push
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Extract version
         id: version
         run: |
           VERSION=$(grep -m1 '^version' pyproject.toml | sed 's/version *= *"\(.*\)"/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push container images
-        env:
-          # TUNECHAT_URL is baked into the Flutter JS bundle at build time
-          # via --dart-define (see Dockerfile flutter-build stage).
-          # Pulling through env: is the safe pattern — inline expressions
-          # in a run: shell line is a workflow-injection smell.
-          TUNECHAT_URL: ${{ vars.OHSHEET_TUNECHAT_URL }}
-        run: |
-          docker build \
-            --build-arg APP_VERSION=${{ steps.version.outputs.version }} \
-            --build-arg TUNECHAT_URL="$TUNECHAT_URL" \
-            -t ${{ env.IMAGE }}:${{ github.sha }} \
-            -t ${{ env.IMAGE }}:latest .
-          docker push ${{ env.IMAGE }}:${{ github.sha }}
-          docker push ${{ env.IMAGE }}:latest
+      # Build all three images with GitHub Actions layer cache.
+      # The app image is the big win (~5 min uncached → ~1 min cached)
+      # because the pip-install-torch and flutter-build layers rarely
+      # change and weigh ~2 GB combined.
+      - name: Build and push app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
+            TUNECHAT_URL=${{ vars.OHSHEET_TUNECHAT_URL }}
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,scope=app,mode=max
 
-          docker build -t ${{ env.IMAGE_DECOMPOSER }}:${{ github.sha }} -t ${{ env.IMAGE_DECOMPOSER }}:latest -f svc-decomposer/Dockerfile .
-          docker push ${{ env.IMAGE_DECOMPOSER }}:${{ github.sha }}
-          docker push ${{ env.IMAGE_DECOMPOSER }}:latest
+      - name: Build and push decomposer image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: svc-decomposer/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_DECOMPOSER }}:${{ github.sha }}
+            ${{ env.IMAGE_DECOMPOSER }}:latest
+          cache-from: type=gha,scope=decomposer
+          cache-to: type=gha,scope=decomposer,mode=max
 
-          docker build -t ${{ env.IMAGE_ASSEMBLER }}:${{ github.sha }} -t ${{ env.IMAGE_ASSEMBLER }}:latest -f svc-assembler/Dockerfile .
-          docker push ${{ env.IMAGE_ASSEMBLER }}:${{ github.sha }}
-          docker push ${{ env.IMAGE_ASSEMBLER }}:latest
+      - name: Build and push assembler image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: svc-assembler/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_ASSEMBLER }}:${{ github.sha }}
+            ${{ env.IMAGE_ASSEMBLER }}:latest
+          cache-from: type=gha,scope=assembler
+          cache-to: type=gha,scope=assembler,mode=max
 
       - name: Deploy to VM
         env:
