@@ -685,7 +685,12 @@ def _yt_dlp_search(query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
     boundary where network I/O happens, so tests mock this function.
     """
     # Local imports so tests can patch _yt_dlp_search without forcing
-    # yt-dlp into the test environment.
+    # yt-dlp into the test environment. apply_ytdlp_cookies is imported
+    # locally (not at module top) to stay consistent with that pattern —
+    # if yt-dlp isn't installed, this function isn't called, so its
+    # dependencies shouldn't be required at import time either. Contrast
+    # with ingest.py, which imports apply_ytdlp_cookies at top-level
+    # because yt-dlp is always required there.
     import yt_dlp
 
     from backend.services._ytdlp_utils import apply_ytdlp_cookies

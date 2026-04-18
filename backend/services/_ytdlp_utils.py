@@ -6,11 +6,25 @@ from ``cover_search``, so the helper can't live in either one).
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import tempfile
 from pathlib import Path
 
 from backend.config import settings
 
 log = logging.getLogger(__name__)
+
+
+# yt-dlp treats the cookiefile as read/write — it rotates session auth
+# tokens during a download and writes them back to disk. The deployed
+# source file is bind-mounted ``:ro`` in docker-compose.prod.yml, so
+# pointing yt-dlp directly at it crashes with
+# ``[Errno 30] Read-only file system``. We copy the source into a
+# pid-scoped tmp file on each call and hand yt-dlp the writable copy.
+# The copy is ephemeral — any rotations yt-dlp writes get overwritten
+# on the next call from the read-only source of truth.
+_TMP_COOKIES = Path(tempfile.gettempdir()) / f"ytdlp-cookies-{os.getpid()}.txt"
 
 
 def apply_ytdlp_cookies(ydl_opts: dict) -> None:
@@ -31,11 +45,25 @@ def apply_ytdlp_cookies(ydl_opts: dict) -> None:
     path_str = settings.ytdlp_cookies_path
     if not path_str:
         return
-    p = Path(path_str)
+    src = Path(path_str)
     try:
-        if p.is_file() and p.stat().st_size > 0:
-            ydl_opts["cookiefile"] = str(p)
+        if not (src.is_file() and src.stat().st_size > 0):
+            return
     except OSError as exc:
         # e.g. permission denied or path raced into existence — don't
         # crash, just log and run anonymously.
         log.warning("ytdlp cookies: cannot stat %s: %s", path_str, exc)
+        return
+
+    try:
+        shutil.copyfile(src, _TMP_COOKIES)
+    except OSError as exc:
+        # Tmp dir full / permission-denied — yt-dlp runs without
+        # cookies rather than crashing the job.
+        log.warning(
+            "ytdlp cookies: cannot copy %s to %s: %s",
+            src, _TMP_COOKIES, exc,
+        )
+        return
+
+    ydl_opts["cookiefile"] = str(_TMP_COOKIES)
