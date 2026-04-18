@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "3.0.0"
+SCHEMA_VERSION = "3.1.0"
 
 
 # ---------------------------------------------------------------------------
@@ -46,12 +46,14 @@ class RemoteAudioFile(BaseModel):
     duration_sec: float
     channels: int
     content_hash: str | None = None
+    source_filename: str | None = None
 
 
 class RemoteMidiFile(BaseModel):
     uri: str
     ticks_per_beat: int
     content_hash: str | None = None
+    source_filename: str | None = None
 
 
 class SectionLabel(str, Enum):
@@ -129,6 +131,7 @@ class InputMetadata(BaseModel):
     title: str | None = None
     artist: str | None = None
     source: Literal["title_lookup", "audio_upload", "midi_upload"]
+    source_filename: str | None = None
     # When True, the ingest stage will attempt to find a clean piano
     # cover of the song (via yt-dlp search + scoring) and swap the
     # user's URL for the cover's URL before transcription. See
@@ -222,11 +225,26 @@ class ScoreChordEvent(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
+class Repeat(BaseModel):
+    """Repeat bracket in the score.
+
+    ``simple`` — a plain ``|: ... :|`` repeat with no volta brackets.
+    ``with_endings`` — a repeated section with 1st/2nd-ending brackets.
+    Populated by the refine stage; consumed by engrave.
+    """
+    start_beat: float
+    end_beat: float
+    kind: Literal["simple", "with_endings"]
+
+
 class ScoreSection(BaseModel):
     start_beat: float
     end_beat: float
     label: SectionLabel
     phrase_boundaries: list[float] = Field(default_factory=list)
+    # Free-form label set by refine stage. Falls back to ``label`` when
+    # absent. Engrave renders whichever is present.
+    custom_label: str | None = None
 
 
 class ScoreMetadata(BaseModel):
@@ -236,6 +254,15 @@ class ScoreMetadata(BaseModel):
     difficulty: Difficulty
     sections: list[ScoreSection] = Field(default_factory=list)
     chord_symbols: list[ScoreChordEvent] = Field(default_factory=list)
+    # Populated by the refine stage. All optional so upstream producers
+    # that don't know about refine can still build valid ScoreMetadata.
+    title: str | None = None
+    composer: str | None = None
+    arranger: str | None = None
+    tempo_marking: str | None = None        # e.g., "Andante"
+    # MIDI pitch where the left/right hand split — engrave's default is ~60.
+    staff_split_hint: int | None = Field(default=None, ge=0, le=127)
+    repeats: list[Repeat] = Field(default_factory=list)
 
 
 class PianoScore(BaseModel):
@@ -351,6 +378,7 @@ ScorePipelineMode = Literal["arrange", "condense_only"]
 class PipelineConfig(BaseModel):
     variant: PipelineVariant
     skip_humanizer: bool = False
+    enable_refine: bool = True
     stage_timeout_sec: int = 600
     score_pipeline: ScorePipelineMode = "arrange"
 
@@ -374,4 +402,6 @@ class PipelineConfig(BaseModel):
                 # Replace arrange with just condense (transform is a
                 # no-op stub, so skip it to save pipeline time).
                 plan[idx : idx + 1] = ["condense"]
+        if self.enable_refine and "engrave" in plan:
+            plan.insert(plan.index("engrave"), "refine")
         return plan

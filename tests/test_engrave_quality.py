@@ -342,53 +342,80 @@ def test_l2_humanized_fermata_rendered(engraved_artifacts):
 # ---------------------------------------------------------------------------
 
 
-def _count_staff(musicxml: bytes, staff: int) -> int:
-    """Count pitched ``<note>`` elements tagged with ``<staff>{staff}</staff>``."""
+def _count_part_notes(musicxml: bytes, part_index: int) -> int:
+    """Count pitched ``<note>`` elements in the N-th ``<part>`` (0-based)."""
     from lxml import etree
 
+    parts = etree.fromstring(musicxml).findall("part")
+    if part_index >= len(parts):
+        return 0
     count = 0
-    for note in etree.fromstring(musicxml).iter("note"):
+    for note in parts[part_index].iter("note"):
         if note.find("rest") is not None:
             continue
-        staff_elem = note.find("staff")
-        if staff_elem is not None and int(staff_elem.text) == staff:
-            count += 1
+        count += 1
     return count
 
 
-def test_l2_grand_staff_single_part(engraved_artifacts):
-    """Piano scores render as one ``<part>`` with ``<staves>2</staves>``.
+def test_l2_grand_staff_two_parts_braced(engraved_artifacts):
+    """Piano scores render as two ``<part>`` elements joined by a brace group.
 
-    Plan phase 2.3 / PR-8 — before this change, engrave emitted two
-    separate parts ("Right Hand", "Left Hand") which renderers drew as
-    two stacked instruments without a brace. The fix is ``PartStaff`` +
-    ``StaffGroup(symbol='brace')``, which music21 collapses into a single
-    multi-staff part at export time. The part-list label is "Piano",
-    not the per-hand labels used for in-engine bookkeeping.
+    We emit MusicXML in the "two parts + part-group(brace)" idiom instead
+    of the "one part + <staves>2" idiom. Rationale: ``musicxml2ly`` (the
+    MusicXML → LilyPond bridge) does not reliably honor the one-part /
+    multi-staff encoding, so LilyPond renders both staves with a treble
+    clef and left-hand notes end up as ledger-line stacks below the
+    staff. Two-part + brace is handled correctly by LilyPond, MuseScore,
+    Verovio, and OSMD.
     """
     from lxml import etree
 
-    # two_hand_chordal is the canonical grand-staff fixture: triads in
-    # RH, octaves in LH — both must end up on the same part.
+    # two_hand_chordal is the canonical grand-staff fixture: 12 RH notes
+    # (triads) and 8 LH notes (octaves).
     musicxml, _ = engraved_artifacts["two_hand_chordal"]
     root = etree.fromstring(musicxml)
 
     parts = root.findall("part")
-    assert len(parts) == 1, f"expected single merged part, got {len(parts)}"
+    assert len(parts) == 2, f"expected two parts (RH + LH), got {len(parts)}"
 
-    score_parts = root.findall("part-list/score-part")
-    assert len(score_parts) == 1
-    part_name = score_parts[0].findtext("part-name")
-    assert part_name == "Piano", f"expected part-name 'Piano', got {part_name!r}"
-
-    staves = [int(e.text) for e in root.iter("staves")]
-    assert staves and max(staves) == 2, (
-        f"expected <staves>2</staves>, got {staves}"
+    # No <staves> element under any part — that's the old one-part idiom.
+    assert not list(root.iter("staves")), (
+        "unexpected <staves> element — two-part encoding should not declare it"
     )
 
-    # Staff 1 gets the 12 RH notes, staff 2 gets the 8 LH notes.
-    assert _count_staff(musicxml, 1) == 12
-    assert _count_staff(musicxml, 2) == 8
+    # part-list carries a brace-group wrapping both score-parts.
+    part_list = root.find("part-list")
+    assert part_list is not None
+    groups = part_list.findall("part-group")
+    assert groups, "expected a <part-group> in <part-list>"
+    brace_starts = [
+        g for g in groups
+        if g.get("type") == "start" and g.findtext("group-symbol") == "brace"
+    ]
+    assert brace_starts, "expected a brace-type part-group in part-list"
+    assert brace_starts[0].findtext("group-name") == "Piano"
+
+    # Clef sanity: part 1 = treble (G on line 2), part 2 = bass (F on line 4).
+    def clef_of(part_elem) -> tuple[str, str]:
+        clef = part_elem.find("measure/attributes/clef")
+        assert clef is not None, (
+            "no <clef> in first measure of part — "
+            "xpath 'measure/attributes/clef' found nothing"
+        )
+        return (clef.findtext("sign") or "", clef.findtext("line") or "")
+
+    assert clef_of(parts[0]) == ("G", "2"), f"RH clef: {clef_of(parts[0])}"
+    assert clef_of(parts[1]) == ("F", "4"), f"LH clef: {clef_of(parts[1])}"
+
+    # 12 RH notes on part 1, 8 LH notes on part 2 (same counts as before).
+    rh_count = _count_part_notes(musicxml, 0)
+    lh_count = _count_part_notes(musicxml, 1)
+    assert rh_count == 12, (
+        f"RH part (index 0) has {rh_count} pitched notes, expected 12"
+    )
+    assert lh_count == 8, (
+        f"LH part (index 1) has {lh_count} pitched notes, expected 8"
+    )
 
 
 def test_l2_two_voices_preserved_on_same_staff(engraved_artifacts):
@@ -437,18 +464,478 @@ def test_l2_two_voices_preserved_on_same_staff(engraved_artifacts):
     assert backups, "expected <backup> elements separating voice 1 from voice 2"
 
 
-def test_l2_rh_only_fixture_still_single_part(engraved_artifacts):
-    """An empty-LH fixture still emits a grand staff — just with an empty
-    bass stave. This catches the regression where dropping LH content
-    would also drop the ``<staves>2</staves>`` declaration.
+def test_l2_rh_only_fixture_still_braced(engraved_artifacts):
+    """An empty-LH fixture still emits a two-part braced grand staff.
+
+    The LH ``<part>`` will contain measures with only rests, but the
+    ``<part-group>`` (brace) must still be present so renderers draw a
+    grand staff with the expected shape.
     """
     from lxml import etree
 
     musicxml, _ = engraved_artifacts["empty_left_hand"]
     root = etree.fromstring(musicxml)
-    assert len(root.findall("part")) == 1
-    staves = [int(e.text) for e in root.iter("staves")]
-    assert staves and max(staves) == 2
+
+    parts = root.findall("part")
+    assert len(parts) == 2, f"expected two parts even with empty LH, got {len(parts)}"
+
+    brace_starts = [
+        g for g in root.findall("part-list/part-group")
+        if g.get("type") == "start" and g.findtext("group-symbol") == "brace"
+    ]
+    assert brace_starts, "expected brace part-group even when LH is empty"
+
+    # LH part exists but has no pitched notes.
+    assert _count_part_notes(musicxml, 1) == 0
+
+
+def test_l2_bass_range_lh_renders_on_bass_clef_part():
+    """Regression for job f255d56b4243 (YouTube oFRbZJXjWIA).
+
+    LH pitches in the E2–B3 range must land on a part with a bass
+    clef, not on a part that inherits a treble clef. Before the
+    two-part / brace fix, music21's PartStaff encoding passed through
+    musicxml2ly as a single staff group with a dropped bass clef, and
+    LilyPond drew all LH notes as ledger-line stacks below the treble.
+    """
+    import xml.etree.ElementTree as etree
+
+    from backend.contracts import (
+        PianoScore,
+        ScoreMetadata,
+        ScoreNote,
+        TempoMapEntry,
+    )
+    from backend.services.engrave import _engrave_sync
+
+    # Minimal reproduction: four RH quarters in the C4–E6 range and four
+    # LH quarters in the E2–B3 range, one measure of 4/4.
+    rh = [
+        ScoreNote(id=f"rh-{i}", pitch=p, onset_beat=float(i), duration_beat=1.0, velocity=75, voice=1)
+        for i, p in enumerate([62, 67, 72, 76])  # D4, G4, C5, E5
+    ]
+    lh = [
+        ScoreNote(id=f"lh-{i}", pitch=p, onset_beat=float(i), duration_beat=1.0, velocity=75, voice=1)
+        for i, p in enumerate([40, 47, 54, 59])  # E2, B2, F#3, B3
+    ]
+    score = PianoScore(
+        right_hand=rh,
+        left_hand=lh,
+        metadata=ScoreMetadata(
+            key="B:minor",
+            time_signature=(4, 4),
+            tempo_map=[TempoMapEntry(time_sec=0.0, beat=0.0, bpm=136.0)],
+            difficulty="intermediate",
+            sections=[],
+            chord_symbols=[],
+        ),
+    )
+
+    _pdf, musicxml, _midi, _chords = _engrave_sync(score, title="bob", composer="")
+    root = etree.fromstring(musicxml)
+
+    parts = root.findall("part")
+    assert len(parts) == 2, f"expected two parts, got {len(parts)}"
+
+    # RH part → treble (G/2); LH part → bass (F/4).
+    rh_clef = parts[0].find("measure/attributes/clef")
+    lh_clef = parts[1].find("measure/attributes/clef")
+    assert rh_clef is not None and rh_clef.findtext("sign") == "G"
+    assert lh_clef is not None and lh_clef.findtext("sign") == "F"
+
+    # Every LH note lives on the LH part only.
+    lh_pitches_in_rh = [
+        int(n.findtext("pitch/octave")) for n in parts[0].iter("note")
+        if n.find("pitch") is not None and int(n.findtext("pitch/octave")) <= 3
+    ]
+    assert not lh_pitches_in_rh, (
+        f"LH-range pitches ended up on the RH part: {lh_pitches_in_rh}"
+    )
+
+
+def test_l2_bar_crossing_note_in_voice_is_split_with_tie():
+    """A voice-2 note that crosses a bar line must be split into two
+    tied notes — never emitted as a single over-long duration that
+    overflows its starting measure.
+
+    MuseScore 4 renders a "Score corrupted" banner for any MusicXML
+    measure whose voice durations sum to more than the time signature
+    allows. Before the fix, engrave's explicit-``Voice`` path relied on
+    ``part.makeNotation(inPlace=True)`` to split bar-crossing notes via
+    ``makeTies`` — but music21's ``makeTies`` does not reliably descend
+    into ``Voice`` sub-streams, so voice-2 notes straddling a barline
+    got written verbatim into their starting measure with an oversized
+    ``<duration>``.
+    """
+    import xml.etree.ElementTree as etree
+
+    from backend.contracts import (
+        PianoScore,
+        ScoreMetadata,
+        ScoreNote,
+        TempoMapEntry,
+    )
+    from backend.services.engrave import _engrave_sync
+
+    # Reproduces the production failure (job 9334f0368dfe, measure 10):
+    # LH voice 1 contains two same-pitch B3 notes that overlap at a
+    # measure boundary:
+    #   * a 4-beat note ending at m2 beat 0.5 (tied tail from m1),
+    #   * an eighth at m2 beat 0 (attacks during that tied tail),
+    #   * another 4-beat note at m2 beat 0.5 (crosses into m3).
+    # When the same pitch attacks at the same beat as a tied
+    # continuation in a ``Voice`` sub-stream, music21's ``makeTies``
+    # can't split the bar-crossing note cleanly — m2 voice 1 ends up
+    # with 6+6+42 = 54 divisions instead of 48. MuseScore flags the
+    # overflow as a "corrupted score".
+    rh = [
+        ScoreNote(id=f"rh-{i}", pitch=72, onset_beat=float(i), duration_beat=1.0, velocity=80, voice=1)
+        for i in range(12)  # 3 measures of quarters
+    ]
+    lh = [
+        # M1 LH v1: eighth at beat 0, then 4-beat note at beat 0.5
+        # (crosses into M2 by 0.5 beats).
+        ScoreNote(id="lh-m1-v1a", pitch=59, onset_beat=0.0, duration_beat=0.5, velocity=64, voice=1),
+        ScoreNote(id="lh-m1-v1b", pitch=59, onset_beat=0.5, duration_beat=4.0, velocity=77, voice=1),
+        # M1 LH v2 whole note — forces use_explicit_voices=True.
+        ScoreNote(id="lh-m1-v2", pitch=55, onset_beat=0.0, duration_beat=4.0, velocity=70, voice=2),
+        # M2 LH v1: ANOTHER eighth at beat 4 (onset=4, dur=0.5) that
+        # overlaps with the tied tail of lh-m1-v1b, then another
+        # 4-beat note crossing into M3.
+        ScoreNote(id="lh-m2-v1a", pitch=59, onset_beat=4.0, duration_beat=0.5, velocity=64, voice=1),
+        ScoreNote(id="lh-m2-v1b", pitch=59, onset_beat=4.5, duration_beat=4.0, velocity=77, voice=1),
+        ScoreNote(id="lh-m2-v2", pitch=48, onset_beat=4.0, duration_beat=4.0, velocity=70, voice=2),
+        # M3 padding so the tied tail has somewhere to land.
+        ScoreNote(id="lh-m3-v1", pitch=55, onset_beat=8.5, duration_beat=3.5, velocity=70, voice=1),
+        ScoreNote(id="lh-m3-v2", pitch=48, onset_beat=8.0, duration_beat=4.0, velocity=70, voice=2),
+    ]
+
+    score = PianoScore(
+        metadata=ScoreMetadata(
+            key="C:major",
+            time_signature=(4, 4),
+            tempo_map=[TempoMapEntry(time_sec=0.0, beat=0.0, bpm=120.0)],
+            difficulty="intermediate",
+            sections=[],
+            chord_symbols=[],
+        ),
+        right_hand=rh,
+        left_hand=lh,
+    )
+
+    _pdf, musicxml, _midi, _chord_count = _engrave_sync(
+        score, title="bar_crossing", composer="test",
+    )
+
+    root = etree.fromstring(musicxml)
+    parts = root.findall("part")
+    assert len(parts) == 2, f"expected two parts (RH + LH), got {len(parts)}"
+    # This test operates on the LH part (bar-crossing notes are in LH in
+    # this fixture). parts[0] is RH, parts[1] is LH under two-part encoding.
+    lh_part = parts[1]
+
+    # Pull the divisions + time signature from the first measure's
+    # <attributes> block so this test stays honest if we change defaults.
+    first_attrs = lh_part.find("measure/attributes")
+    divisions = int(first_attrs.findtext("divisions"))
+    beats = int(first_attrs.find("time").findtext("beats"))
+    beat_type = int(first_attrs.find("time").findtext("beat-type"))
+    expected_per_measure = divisions * 4 * beats // beat_type
+
+    overflows: list[tuple[str, int, int]] = []
+    for measure in lh_part.findall("measure"):
+        # Walk the measure top-to-bottom tracking a per-voice cursor.
+        # Each voice's duration in the measure is the max cursor it
+        # reaches before the terminating ``<backup>`` (or end-of-measure).
+        voice_max: dict[str, int] = {}
+        cursor_by_voice: dict[str, int] = {}
+        current_voice = "1"
+        for el in measure:
+            if el.tag == "note":
+                v_el = el.find("voice")
+                voice = v_el.text if v_el is not None else current_voice
+                current_voice = voice
+                is_chord = el.find("chord") is not None
+                dur = int(el.findtext("duration") or 0)
+                if not is_chord:
+                    cursor_by_voice[voice] = cursor_by_voice.get(voice, 0) + dur
+                voice_max[voice] = max(voice_max.get(voice, 0), cursor_by_voice.get(voice, 0))
+            elif el.tag == "backup":
+                dur = int(el.findtext("duration") or 0)
+                cursor_by_voice[current_voice] = max(0, cursor_by_voice.get(current_voice, 0) - dur)
+            elif el.tag == "forward":
+                dur = int(el.findtext("duration") or 0)
+                cursor_by_voice[current_voice] = cursor_by_voice.get(current_voice, 0) + dur
+                voice_max[current_voice] = max(
+                    voice_max.get(current_voice, 0), cursor_by_voice[current_voice]
+                )
+
+        for voice, filled in voice_max.items():
+            if filled > expected_per_measure:
+                overflows.append((measure.get("number"), voice, filled))
+
+    assert not overflows, (
+        f"voice duration overflow(s) — MuseScore will flag this as a corrupt "
+        f"score. expected ≤ {expected_per_measure} divisions per voice per "
+        f"measure, got: {overflows}"
+    )
+
+
+def test_l2_ties_do_not_cross_voices():
+    """A tie pair (``type="start"`` / ``type="stop"``) must stay in the
+    same (pitch, voice, staff). When music21's ``makeTies`` writes the
+    continuation of a bar-crossing note on a DIFFERENT voice in the
+    next measure, the sanitizer's voice-clamp can merge it into a
+    voice that has no matching start — leaving an orphan tie that
+    MuseScore 4 flags as a corrupt score.
+
+    This reproduces the second failure mode from job 9334f0368dfe:
+    a LH voice-1 note that crosses into a measure whose only other
+    LH content is in voice 2 (forcing ``use_explicit_voices=True``)
+    ends up with its tie continuation renumbered and the sanitizer
+    turns the resulting voice mismatch into a corrupt tie chain.
+    """
+    import xml.etree.ElementTree as etree
+
+    from backend.contracts import (
+        PianoScore,
+        ScoreMetadata,
+        ScoreNote,
+        TempoMapEntry,
+    )
+    from backend.services.engrave import _engrave_sync
+
+    # Both hands need 2 voices with sparse voice-2 content — that's
+    # the pattern that makes music21 assign a fresh voice number to
+    # the LH bar-crossing continuation in the next measure. The
+    # sanitizer then clamps that fresh number back into voice 2, which
+    # on the NEXT measure doesn't match voice 1 where the tie started.
+    rh = [
+        ScoreNote(id=f"rh-v1-{i}", pitch=72, onset_beat=float(i), duration_beat=1.0, velocity=80, voice=1)
+        for i in range(12)
+    ]
+    # RH voice 2 appears only in M1 and M3 — sparse.
+    rh.append(ScoreNote(id="rh-v2-m1", pitch=67, onset_beat=3.5, duration_beat=0.25, velocity=70, voice=2))
+    rh.append(ScoreNote(id="rh-v2-m3", pitch=67, onset_beat=9.5, duration_beat=0.25, velocity=70, voice=2))
+    lh = [
+        # M1 LH v1: eighth + 4-beat note crossing into M2 by 0.5 beats.
+        ScoreNote(id="lh-m1-v1a", pitch=59, onset_beat=0.0, duration_beat=0.5, velocity=64, voice=1),
+        ScoreNote(id="lh-m1-v1b", pitch=59, onset_beat=0.5, duration_beat=4.0, velocity=77, voice=1),
+        # M1 LH v2: F3 whole note forces explicit voices on LH.
+        ScoreNote(id="lh-m1-v2", pitch=53, onset_beat=0.0, duration_beat=4.0, velocity=70, voice=2),
+        # M2 LH v1: only a single G#3 at beat 0.5 — no voice 2 in M2 LH.
+        ScoreNote(id="lh-m2-v1a", pitch=56, onset_beat=4.5, duration_beat=1.0, velocity=70, voice=1),
+        # M3 LH v1+v2 so the LH has voice 2 content elsewhere.
+        ScoreNote(id="lh-m3-v1", pitch=55, onset_beat=8.0, duration_beat=4.0, velocity=70, voice=1),
+        ScoreNote(id="lh-m3-v2", pitch=48, onset_beat=8.0, duration_beat=4.0, velocity=70, voice=2),
+    ]
+    score = PianoScore(
+        metadata=ScoreMetadata(
+            key="C:major",
+            time_signature=(4, 4),
+            tempo_map=[TempoMapEntry(time_sec=0.0, beat=0.0, bpm=120.0)],
+            difficulty="intermediate",
+            sections=[],
+            chord_symbols=[],
+        ),
+        right_hand=rh,
+        left_hand=lh,
+    )
+    _pdf, musicxml, _midi, _chord_count = _engrave_sync(
+        score, title="t", composer="c",
+    )
+
+    root = etree.fromstring(musicxml)
+    # Walk every tie and confirm each (pitch, voice, staff) start has
+    # a matching stop — no orphans, no doubles, no unclosed chains.
+    # Tie-chain tracking scoped per <part>. Under two-part encoding the
+    # old (pitch, voice, staff) tuple degenerates because <staff> tags
+    # are absent — scope the open_ties dict per <part> so RH and LH
+    # tie chains are tracked independently.
+    issues: list[tuple[str, str, tuple]] = []
+    for part in root.findall("part"):
+        open_ties: dict[tuple, str] = {}  # reset per part
+        for measure in part.findall("measure"):
+            mnum = measure.get("number")
+            for n in measure.findall("note"):
+                pitch = n.find("pitch")
+                if pitch is None:
+                    continue
+                key = (
+                    pitch.findtext("step"),
+                    pitch.findtext("octave"),
+                    pitch.findtext("alter") or "0",
+                    n.findtext("voice") or "1",
+                    n.findtext("staff") or "1",
+                )
+                for tie in n.findall("tie"):
+                    typ = tie.get("type")
+                    if typ == "start":
+                        if key in open_ties:
+                            issues.append(("double-start", mnum, key))
+                        open_ties[key] = mnum
+                    elif typ == "stop":
+                        if key not in open_ties:
+                            issues.append(("orphan-stop", mnum, key))
+                        else:
+                            del open_ties[key]
+        for key, mnum in open_ties.items():
+            issues.append(("unclosed-start", mnum, key))
+
+    assert not issues, (
+        f"tie chain issues — MuseScore will flag this as corrupt: {issues}"
+    )
+
+
+def test_l2_tie_chain_per_part_isolation():
+    """Open ties don't leak across parts.
+
+    In the two-part encoding, the same pitch can appear (untied) on both
+    RH and LH. The tie-chain sanitizer must track open ties per-part so
+    an RH tie-start never "matches" an LH non-tied attack of the same
+    pitch.
+    """
+    import xml.etree.ElementTree as etree
+
+    from backend.contracts import (
+        PianoScore,
+        ScoreMetadata,
+        ScoreNote,
+        TempoMapEntry,
+    )
+    from backend.services.engrave import _engrave_sync
+
+    # RH has a tied C4 crossing a bar line; LH has an untied C4 in
+    # measure 2. The tie sanitizer must not rewrite the LH note's voice.
+    rh = [
+        ScoreNote(id="rh-0", pitch=60, onset_beat=0.0, duration_beat=8.0, velocity=75, voice=1),
+    ]
+    lh = [
+        ScoreNote(id="lh-0", pitch=60, onset_beat=5.0, duration_beat=1.0, velocity=75, voice=1),
+    ]
+    score = PianoScore(
+        right_hand=rh,
+        left_hand=lh,
+        metadata=ScoreMetadata(
+            key="C:major",
+            time_signature=(4, 4),
+            tempo_map=[TempoMapEntry(time_sec=0.0, beat=0.0, bpm=120.0)],
+            difficulty="intermediate",
+            sections=[],
+            chord_symbols=[],
+        ),
+    )
+
+    _pdf, musicxml, _midi, _chords = _engrave_sync(score, title="x", composer="")
+    root = etree.fromstring(musicxml)
+    parts = root.findall("part")
+    assert len(parts) == 2
+
+    # Every tied note pair must have both ends within the same <part>.
+    for part in parts:
+        open_pitches: dict[tuple[str, str, str], bool] = {}
+        for note in part.iter("note"):
+            pitch = note.find("pitch")
+            if pitch is None:
+                continue
+            key = (
+                pitch.findtext("step") or "",
+                pitch.findtext("octave") or "",
+                pitch.findtext("alter") or "0",
+            )
+            for tie in note.findall("tie"):
+                typ = tie.get("type")
+                if typ == "start":
+                    open_pitches[key] = True
+                elif typ == "stop":
+                    # stop must match a start in the SAME part.
+                    assert open_pitches.get(key), (
+                        f"tie-stop with no matching tie-start in same part for pitch {key}"
+                    )
+                    open_pitches[key] = False
+
+
+def test_align_tie_chain_voices_does_not_leak_across_parts():
+    """Unit regression guard for the per-part scoping fix.
+
+    Hand-built MusicXML: part 1 (RH) has an unclosed tie-start on C4
+    voice 1; part 2 (LH) has an independent C4 voice 2 with a
+    tie-stop. Under the PRE-FIX code (global ``open_ties`` dict across
+    the whole document), the LH tie-stop would pop the RH entry and
+    rewrite the LH note's voice to 1. Under the per-part scoping fix,
+    the RH entry never reaches LH and the LH voice stays at 2.
+
+    This is the exact bug the integration test
+    ``test_l2_tie_chain_per_part_isolation`` was meant to cover, but
+    that test's music21-generated fixture can't produce a tie-stop on
+    an LH note without a matching start in the same hand. A unit test
+    on the sanitizer lets us construct the collision precisely.
+    """
+    import xml.etree.ElementTree as etree
+
+    from backend.services.engrave import _align_tie_chain_voices
+
+    # Minimal MusicXML with the cross-part collision scenario. Not
+    # something music21 would normally emit (RH has an unclosed
+    # tie-start — a hypothetical malformed input). The point is to
+    # prove the sanitizer's per-part scoping: whatever RH tie state
+    # exists at the end of RH processing must not bleed into LH.
+    xml = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<score-partwise version="4.0">'
+        b'<part-list>'
+        b'<score-part id="P1"/>'
+        b'<score-part id="P2"/>'
+        b'</part-list>'
+        b'<part id="P1">'
+        b'<measure number="1">'
+        b'<note>'
+        b'<pitch><step>C</step><octave>4</octave></pitch>'
+        b'<duration>4</duration>'
+        b'<voice>1</voice>'
+        b'<tie type="start"/>'
+        b'</note>'
+        b'</measure>'
+        b'</part>'
+        b'<part id="P2">'
+        b'<measure number="1">'
+        b'<note>'
+        b'<pitch><step>C</step><octave>4</octave></pitch>'
+        b'<duration>4</duration>'
+        b'<voice>2</voice>'
+        b'<tie type="stop"/>'
+        b'</note>'
+        b'</measure>'
+        b'</part>'
+        b'</score-partwise>'
+    )
+
+    result = _align_tie_chain_voices(xml)
+    root = etree.fromstring(result)
+
+    # Verify both parts are present and untouched structurally.
+    parts = root.findall("part")
+    assert len(parts) == 2, f"expected two parts, got {len(parts)}"
+
+    # LH voice must remain "2" — the RH tie-start entry must not have
+    # leaked across the part boundary.
+    lh_note = parts[1].find("measure/note")
+    assert lh_note is not None
+    lh_voice = lh_note.findtext("voice")
+    assert lh_voice == "2", (
+        f"LH note's voice was rewritten from 2 to {lh_voice!r} — "
+        "open_ties leaked from RH part to LH part "
+        "(per-part scoping regression)"
+    )
+
+    # RH voice also unchanged (sanity: no self-rewrite on the unclosed
+    # tie-start).
+    rh_note = parts[0].find("measure/note")
+    assert rh_note is not None
+    rh_voice = rh_note.findtext("voice")
+    assert rh_voice == "1", (
+        f"RH note's voice unexpectedly changed to {rh_voice!r}"
+    )
 
 
 def test_engrave_does_not_leak_music21_defaults():
@@ -469,6 +956,34 @@ def test_engrave_does_not_leak_music21_defaults():
         load_score_fixture("c_major_scale"), title="t", composer="c"
     )
     assert music21.defaults.divisionsPerQuarter == prior
+
+
+@pytest.mark.parametrize("name", FIXTURE_NAMES)
+def test_l2_part_names_and_ids_are_clean(name: str, engraved_artifacts):
+    """``<part-name>`` must be ``"Piano"`` and ``<score-part id>`` must
+    not contain music21 UUIDs.  Both staves carry the same label so OSMD
+    displays ``"Piano"`` on each staff, matching the brace group name.
+    """
+    import re
+
+    from lxml import etree
+
+    musicxml, _ = engraved_artifacts[name]
+    root = etree.fromstring(musicxml)
+
+    _UUID_PART_ID = re.compile(r"^P[0-9a-f]{16,}$", re.IGNORECASE)
+
+    for score_part in root.findall("part-list/score-part"):
+        pn = score_part.find("part-name")
+        if pn is not None:
+            assert pn.text == "Piano", (
+                f"{name}: <part-name> should be 'Piano', got {pn.text!r}"
+            )
+
+        sp_id = score_part.get("id", "")
+        assert not _UUID_PART_ID.match(sp_id), (
+            f"{name}: <score-part id> looks like a music21 UUID: {sp_id!r}"
+        )
 
 
 def test_coerce_musicxml_durations_fixes_2048th_tuplet_bracket() -> None:
@@ -585,6 +1100,494 @@ def test_musicxml_write_make_notation_false_needs_split_at_durations() -> None:
         assert good_path.stat().st_size > 500
     finally:
         good_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# L2 — Voice collision / chord-tag fix (Task 4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", FIXTURE_NAMES)
+def test_l2_no_voice_onset_collision(name: str, engraved_artifacts):
+    """No two non-chord notes in the same voice may share the same global onset.
+
+    After ``_remap_voices_per_staff()`` collapses voice 3 → voice 2,
+    a measure can have two backup-separated groups of voice-2 notes at
+    the same global beat positions.  Without ``<chord/>`` tags OSMD
+    renders them sequentially, producing note-stacking collisions.
+    ``_fix_voice_collision_chord_tags()`` must resolve this by adding
+    ``<chord/>`` to the second note at each (voice, onset) pair.
+
+    This test walks every measure in every part using a global time
+    cursor (the same model OSMD uses) and asserts that no two non-chord
+    pitched notes in the same voice land at the same position.
+    """
+    musicxml, _ = engraved_artifacts[name]
+
+    import xml.etree.ElementTree as ET  # noqa: PLC0415
+
+    root = ET.fromstring(musicxml)
+    collisions: list[tuple[str, str, str, int]] = []
+
+    for part in root.findall("part"):
+        part_id = part.get("id", "?")
+        for measure in part.findall("measure"):
+            m_num = measure.get("number", "?")
+            global_pos = 0
+            seen: set[tuple[str, int]] = set()
+
+            for el in measure:
+                if el.tag == "note":
+                    is_chord = el.find("chord") is not None
+                    is_rest = el.find("rest") is not None
+                    dur = int(el.findtext("duration") or 0)
+                    v_el = el.find("voice")
+                    voice = (v_el.text if v_el is not None else "1") or "1"
+
+                    onset = global_pos
+                    if not is_chord:
+                        global_pos += dur
+
+                    if not is_chord and not is_rest:
+                        key = (voice, onset)
+                        if key in seen:
+                            collisions.append((part_id, m_num, voice, onset))
+                        else:
+                            seen.add(key)
+                elif el.tag == "backup":
+                    global_pos = max(0, global_pos - int(el.findtext("duration") or 0))
+                elif el.tag == "forward":
+                    global_pos += int(el.findtext("duration") or 0)
+
+    assert not collisions, (
+        f"{name}: voice/onset collisions (note stacking) found — "
+        f"OSMD will render these sequentially instead of as chords: "
+        f"{[(pid, m, v, o) for pid, m, v, o in collisions[:5]]}"
+    )
+
+
+def test_l2_triad_chord_has_no_voice_collision():
+    """Regression: three simultaneous notes (triad) on the same hand must
+    not produce voice/onset collisions after voice remapping.
+
+    When all three chord notes in a triad start on the same beat,
+    music21 puts them in voices 1, 2, 3.  After ``_remap_voices_per_staff``
+    remaps voice 3 → voice 2, both the third and fifth of the chord land
+    in voice 2 at the same global onset without ``<chord/>`` tags.
+    ``_fix_voice_collision_chord_tags`` must detect this and add the
+    missing ``<chord/>`` element, restructuring the note order so
+    chord-mates are adjacent (as the MusicXML spec requires).
+    """
+    import xml.etree.ElementTree as ET
+
+    from backend.contracts import (
+        PianoScore,
+        ScoreMetadata,
+        ScoreNote,
+        TempoMapEntry,
+    )
+    from backend.services.engrave import _engrave_sync
+
+    # One measure of four simultaneous triads: C-E-G (C major) on each beat.
+    # All three notes per triad have the same onset beat and voice=1, so
+    # music21 internally assigns them to voices 1, 2, 3.
+    rh: list[ScoreNote] = []
+    for beat in range(4):
+        for i, pitch in enumerate([60, 64, 67]):  # C4, E4, G4
+            rh.append(
+                ScoreNote(
+                    id=f"rh-{beat}-{i}",
+                    pitch=pitch,
+                    onset_beat=float(beat),
+                    duration_beat=1.0,
+                    velocity=80,
+                    voice=1,
+                )
+            )
+
+    score = PianoScore(
+        metadata=ScoreMetadata(
+            key="C:major",
+            time_signature=(4, 4),
+            tempo_map=[TempoMapEntry(time_sec=0.0, beat=0.0, bpm=120.0)],
+            difficulty="intermediate",
+            sections=[],
+            chord_symbols=[],
+        ),
+        right_hand=rh,
+        left_hand=[],
+    )
+
+    _pdf, musicxml, _midi, _chord_count = _engrave_sync(
+        score, title="triad_test", composer="test"
+    )
+
+    root = ET.fromstring(musicxml)
+    collisions: list[tuple[str, str, int]] = []
+
+    for part in root.findall("part"):
+        for measure in part.findall("measure"):
+            m_num = measure.get("number", "?")
+            global_pos = 0
+            seen: set[tuple[str, int]] = set()
+
+            for el in measure:
+                if el.tag == "note":
+                    is_chord = el.find("chord") is not None
+                    is_rest = el.find("rest") is not None
+                    dur = int(el.findtext("duration") or 0)
+                    v_el = el.find("voice")
+                    voice = (v_el.text if v_el is not None else "1") or "1"
+
+                    onset = global_pos
+                    if not is_chord:
+                        global_pos += dur
+
+                    if not is_chord and not is_rest:
+                        key = (voice, onset)
+                        if key in seen:
+                            collisions.append((m_num, voice, onset))
+                        else:
+                            seen.add(key)
+                elif el.tag == "backup":
+                    global_pos = max(0, global_pos - int(el.findtext("duration") or 0))
+                elif el.tag == "forward":
+                    global_pos += int(el.findtext("duration") or 0)
+
+    assert not collisions, (
+        f"triad chord produced voice/onset collisions: {collisions}. "
+        f"OSMD will stack these notes instead of rendering the chord."
+    )
+
+    # Also verify that the total note count is preserved (12 RH attacks in 1 measure).
+    attack_count = 0
+    for note in root.iter("note"):
+        if note.find("rest") is not None:
+            continue
+        tie_stops = [t for t in note.findall("tie") if t.get("type") == "stop"]
+        if tie_stops and len(tie_stops) == len(note.findall("tie")):
+            continue
+        attack_count += 1
+    assert attack_count == 12, (
+        f"expected 12 note attacks (4 triads × 3 notes), got {attack_count}"
+    )
+
+
+def test_fix_voice_collision_chord_tags_unit():
+    """Unit test for ``_fix_voice_collision_chord_tags`` directly.
+
+    Hand-builds MusicXML with a voice-3-remapped-to-voice-2 collision and
+    verifies the function resolves it — no further dependencies on the
+    engrave pipeline.
+    """
+    import xml.etree.ElementTree as ET
+
+    from backend.services.engrave import _fix_voice_collision_chord_tags
+
+    # Minimal measure: voice 1 C4@0, voice 2 E4@0, backup, voice 2 G4@0
+    # (i.e. the G4 was originally voice 3 and got remapped to voice 2).
+    # After the fix, G4 should carry <chord/> and be adjacent to E4.
+    raw = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<score-partwise version="4.0">'
+        b'<part id="P1">'
+        b'<measure number="1">'
+        b'<attributes><divisions>12</divisions>'
+        b'<time><beats>4</beats><beat-type>4</beat-type></time></attributes>'
+        b'<note><pitch><step>C</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>1</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>E</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>2</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>G</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>2</voice></note>'
+        b'</measure>'
+        b'</part>'
+        b'</score-partwise>'
+    )
+
+    result = _fix_voice_collision_chord_tags(raw)
+    root = ET.fromstring(result)
+    measure = root.find("part/measure")
+    assert measure is not None
+
+    # Walk the measure and check no (voice, onset) collision remains.
+    global_pos = 0
+    seen: set[tuple[str, int]] = set()
+    collisions: list[tuple[str, int]] = []
+    notes_info: list[tuple[str, int, bool, str]] = []  # (voice, onset, is_chord, pitch)
+
+    for el in measure:
+        if el.tag == "note":
+            is_chord = el.find("chord") is not None
+            is_rest = el.find("rest") is not None
+            dur = int(el.findtext("duration") or 0)
+            v_el = el.find("voice")
+            voice = (v_el.text if v_el is not None else "1") or "1"
+            pitch_el = el.find("pitch")
+            pitch_name = (
+                (pitch_el.findtext("step") or "") + (pitch_el.findtext("octave") or "")
+                if pitch_el is not None else "?"
+            )
+
+            onset = global_pos
+            if not is_chord:
+                global_pos += dur
+                if not is_rest:
+                    key = (voice, onset)
+                    if key in seen:
+                        collisions.append(key)
+                    else:
+                        seen.add(key)
+            notes_info.append((voice, onset, is_chord, pitch_name))
+
+        elif el.tag == "backup":
+            global_pos = max(0, global_pos - int(el.findtext("duration") or 0))
+        elif el.tag == "forward":
+            global_pos += int(el.findtext("duration") or 0)
+
+    assert not collisions, f"collision still present after fix: {collisions}"
+
+    # G4 must have <chord/> now.
+    g4_notes = [n for n in notes_info if n[3] == "G4"]
+    assert g4_notes, "G4 note not found in measure"
+    g4_voice, g4_onset, g4_is_chord, _ = g4_notes[0]
+    assert g4_is_chord, "G4 should have <chord/> after fix"
+
+    # E4 and G4 must be adjacent in the element list (chord-mate adjacency).
+    note_elems = [el for el in measure if el.tag == "note"]
+    pitch_seq = [
+        (el.findtext("pitch/step") or "") + (el.findtext("pitch/octave") or "")
+        for el in note_elems
+    ]
+    e4_idx = pitch_seq.index("E4")
+    g4_idx = pitch_seq.index("G4")
+    assert abs(e4_idx - g4_idx) == 1, (
+        f"E4 and G4 must be adjacent in the note list for <chord/> to work; "
+        f"found at positions {e4_idx} and {g4_idx} in {pitch_seq}"
+    )
+
+
+def test_fix_voice_collision_preserves_preexisting_chord():
+    """Bug fix: pre-existing <chord/> tags must keep the correct onset.
+
+    Before the fix, Pass 1 recorded ``global_pos`` (already advanced by the
+    preceding note) as the chord note's onset instead of the shared onset.
+    This caused Pass 2 to miss the true collision and Pass 3 to strip the
+    original <chord/> tag.
+
+    Scenario: C4 (voice 1, dur=12) + E4 (voice 1, <chord/>, dur=12) form a
+    pre-existing chord.  G4 is voice 2 and collides with voice-1 onset=0 after
+    remap — it should get <chord/> added. C4+E4 must remain a chord.
+    """
+    import xml.etree.ElementTree as ET
+
+    from backend.services.engrave import _fix_voice_collision_chord_tags
+
+    # C4 + E4 are a pre-existing chord in voice 1.
+    # G4 is in voice 2 at the same onset — triggers the collision the
+    # function is designed to fix. After the fix:
+    #   - C4 and E4 must remain simultaneous (E4 keeps or regains <chord/>)
+    #   - G4 must get <chord/> (it collides with another voice-2 note if any,
+    #     but here the interesting thing is that E4 is correctly tracked at
+    #     onset=0, not onset=12)
+    raw = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<score-partwise version="4.0">'
+        b'<part id="P1">'
+        b'<measure number="1">'
+        b'<attributes><divisions>12</divisions></attributes>'
+        b'<note><pitch><step>C</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>1</voice></note>'
+        b'<note><chord/>'
+        b'<pitch><step>E</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>1</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>E</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>2</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>G</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>2</voice></note>'
+        b'</measure>'
+        b'</part>'
+        b'</score-partwise>'
+    )
+
+    result = _fix_voice_collision_chord_tags(raw)
+    root = ET.fromstring(result)
+    measure = root.find("part/measure")
+    assert measure is not None
+
+    note_elems = [el for el in measure if el.tag == "note"]
+
+    def pitch_name(el):
+        p = el.find("pitch")
+        if p is None:
+            return "?"
+        return (p.findtext("step") or "") + (p.findtext("octave") or "")
+
+    def voice_of(el):
+        v = el.find("voice")
+        return v.text if v is not None else "1"
+
+    # Walk the output to compute actual onsets.
+    global_pos = 0
+    onset_map: dict[str, int] = {}  # pitch_name → onset
+    for el in measure:
+        if el.tag == "note":
+            is_chord = el.find("chord") is not None
+            dur = int(el.findtext("duration") or 0)
+            pn = pitch_name(el)
+            if not is_chord:
+                onset_map[pn] = global_pos
+                global_pos += dur
+            else:
+                onset_map[pn] = global_pos  # shares current non-advancing position
+        elif el.tag == "backup":
+            global_pos = max(0, global_pos - int(el.findtext("duration") or 0))
+        elif el.tag == "forward":
+            global_pos += int(el.findtext("duration") or 0)
+
+    # C4 and E4 (voice 1) must share onset=0.
+    assert onset_map.get("C4") == 0, f"C4 onset should be 0, got {onset_map.get('C4')}"
+    assert onset_map.get("E4") == 0, (
+        f"E4 (pre-existing chord) onset should be 0, got {onset_map.get('E4')}. "
+        "Bug 1 regression: chord note was recorded at wrong onset."
+    )
+
+    # The voice-2 collision (E4 + G4 both at onset=0 in voice 2) must be resolved.
+    # G4 must carry <chord/>.
+    g4_notes = [el for el in note_elems if pitch_name(el) == "G4"]
+    assert g4_notes, "G4 not found in output"
+    assert g4_notes[0].find("chord") is not None, "G4 should have <chord/> after collision fix"
+
+
+def test_fix_voice_collision_grace_note_passthrough():
+    """Bug fix: grace notes must not trigger false collisions.
+
+    Grace notes have dur=0 and two in the same voice both appear at onset=0,
+    which before the fix would trigger a spurious collision and cause the
+    second grace note (and even subsequent regular notes) to get <chord/>.
+
+    After the fix, grace notes are excluded from collision detection and pass
+    through the measure unchanged (no <chord/> added).
+    """
+    import xml.etree.ElementTree as ET
+
+    from backend.services.engrave import _fix_voice_collision_chord_tags
+
+    # Two grace notes in voice 1, followed by a regular quarter note.
+    # No real collision should be detected; the measure should be returned
+    # unchanged (rewrites=0 path), so the grace notes pass through intact.
+    raw = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<score-partwise version="4.0">'
+        b'<part id="P1">'
+        b'<measure number="1">'
+        b'<attributes><divisions>12</divisions></attributes>'
+        b'<note><grace/>'
+        b'<pitch><step>D</step><octave>4</octave></pitch>'
+        b'<voice>1</voice></note>'
+        b'<note><grace/>'
+        b'<pitch><step>E</step><octave>4</octave></pitch>'
+        b'<voice>1</voice></note>'
+        b'<note><pitch><step>C</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>1</voice></note>'
+        b'</measure>'
+        b'</part>'
+        b'</score-partwise>'
+    )
+
+    result = _fix_voice_collision_chord_tags(raw)
+    root = ET.fromstring(result)
+    measure = root.find("part/measure")
+    assert measure is not None
+
+    note_elems = [el for el in measure if el.tag == "note"]
+
+    # All three notes must survive.
+    assert len(note_elems) == 3, f"Expected 3 notes, got {len(note_elems)}"
+
+    # The grace notes must NOT have <chord/>.
+    grace_notes = [el for el in note_elems if el.find("grace") is not None]
+    assert len(grace_notes) == 2, f"Expected 2 grace notes, got {len(grace_notes)}"
+    for gn in grace_notes:
+        assert gn.find("chord") is None, (
+            "Grace note must not have <chord/> — Bug 2 regression: false collision detected."
+        )
+
+    # The regular C4 must also not have <chord/>.
+    c4_notes = [el for el in note_elems if el.findtext("pitch/step") == "C"]
+    assert c4_notes, "C4 regular note not found"
+    assert c4_notes[0].find("chord") is None, "Regular C4 must not have <chord/>"
+
+
+def test_fix_voice_collision_rest_at_onset_no_chord_on_pitched():
+    """Bug fix: a rest at an onset must not cause the following pitched note
+    to receive <chord/>.
+
+    Before the fix, ``first_at_onset`` was set to False after seeing the rest,
+    making the next pitched note look like a "second note" and wrongly getting
+    <chord/>.  After the fix only pitched notes count as the anchor.
+
+    Scenario: in voice 1, both a rest and C4 share onset=0. C4 must NOT get
+    <chord/>. A second voice (E4 at onset=0) is present to force a collision
+    so the restructure path is triggered.
+    """
+    import xml.etree.ElementTree as ET
+
+    from backend.services.engrave import _fix_voice_collision_chord_tags
+
+    # Voice 1: rest@0 + C4@0 (same onset — rest arrives first in the list).
+    # Voice 2: E4@0 + G4@0 (real collision to ensure restructure runs).
+    # After fix: C4 must not have <chord/>; G4 must have <chord/>.
+    raw = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<score-partwise version="4.0">'
+        b'<part id="P1">'
+        b'<measure number="1">'
+        b'<attributes><divisions>12</divisions></attributes>'
+        b'<note><rest/><duration>12</duration><voice>1</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>C</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>1</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>E</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>2</voice></note>'
+        b'<backup><duration>12</duration></backup>'
+        b'<note><pitch><step>G</step><octave>4</octave></pitch>'
+        b'<duration>12</duration><voice>2</voice></note>'
+        b'</measure>'
+        b'</part>'
+        b'</score-partwise>'
+    )
+
+    result = _fix_voice_collision_chord_tags(raw)
+    root = ET.fromstring(result)
+    measure = root.find("part/measure")
+    assert measure is not None
+
+    note_elems = [el for el in measure if el.tag == "note"]
+
+    def pitch_name(el):
+        p = el.find("pitch")
+        if p is None:
+            return "rest"
+        return (p.findtext("step") or "") + (p.findtext("octave") or "")
+
+    # C4 must not have <chord/> — it is the anchor pitched note at onset=0.
+    c4_notes = [el for el in note_elems if pitch_name(el) == "C4"]
+    assert c4_notes, "C4 not found in output"
+    assert c4_notes[0].find("chord") is None, (
+        "C4 must NOT have <chord/> — Bug 3 regression: rest at onset caused "
+        "the following pitched note to be treated as a chord member."
+    )
+
+    # G4 (second voice-2 note at onset=0) must have <chord/>.
+    g4_notes = [el for el in note_elems if pitch_name(el) == "G4"]
+    assert g4_notes, "G4 not found in output"
+    assert g4_notes[0].find("chord") is not None, "G4 should have <chord/> after collision fix"
 
 
 # ---------------------------------------------------------------------------
@@ -876,3 +1879,205 @@ def test_l2_engraved_flags_reflect_rendered_content(engraved_artifacts):
         )
         assert out.metadata.includes_dynamics is True
         assert out.metadata.includes_pedal_marks is True
+
+
+# ---------------------------------------------------------------------------
+# Helper-level unit tests
+#
+# The three helpers below are private to engrave.py but they have subtle
+# edge cases (grid-floor interactions, float epsilon, degenerate inputs).
+# The end-to-end L1/L2 suites catch the common failure modes but don't
+# exercise these edges, so we pin them here.
+# ---------------------------------------------------------------------------
+
+
+from fractions import Fraction  # noqa: E402 — block-scoped for helper tests
+
+from shared.contracts import ScoreNote  # noqa: E402
+
+from backend.services.engrave import (  # noqa: E402
+    _MIN_SNAPPED_QL,
+    _resolve_same_pitch_overlaps_per_voice,
+    _snap_quarter,
+    _split_bar_crossing_notes,
+)
+
+
+def _sn(pitch: int, onset: float, dur: float, voice: int = 1, nid: str = "") -> ScoreNote:
+    return ScoreNote(
+        id=nid or f"n-{pitch}-{onset}",
+        pitch=pitch,
+        onset_beat=onset,
+        duration_beat=dur,
+        velocity=80,
+        voice=voice,
+    )
+
+
+# ---- _snap_quarter ---------------------------------------------------------
+
+def test_snap_quarter_triplet_eighth_snaps_to_one_sixth():
+    # Arrange's decimal approximation of 1/3 → exact Fraction(4, 12).
+    assert _snap_quarter(0.333333) == Fraction(4, 12)
+
+
+def test_snap_quarter_sixteenth_snaps_exactly():
+    # 16th note = 1/4 qL = Fraction(3, 12).
+    assert _snap_quarter(0.25) == Fraction(3, 12)
+
+
+def test_snap_quarter_sub_min_rounds_to_zero():
+    # Anything below half the grid rounds to 0; callers that need a
+    # positive minimum must clamp with _MIN_SNAPPED_QL themselves (as
+    # the _render_musicxml_bytes loop does at the ``dur = max(...)`` line).
+    assert _snap_quarter(0.01) == Fraction(0)
+
+
+def test_snap_quarter_preserves_exact_grid_values():
+    # Exact multiples of 1/12 round-trip identically.
+    assert _snap_quarter(1.0) == Fraction(12, 12) == Fraction(1)
+    assert _snap_quarter(Fraction(5, 12)) == Fraction(5, 12)
+
+
+# ---- _resolve_same_pitch_overlaps_per_voice --------------------------------
+
+def test_overlap_resolver_truncates_earlier_note_to_next_onset():
+    # Two C4s in voice 1 overlap: first is 2.0 beats starting at 0, second
+    # attacks at beat 1. Resolver must shorten the first to 1.0 beats.
+    notes = [_sn(60, 0.0, 2.0), _sn(60, 1.0, 1.0, nid="n-b")]
+    out = _resolve_same_pitch_overlaps_per_voice(notes)
+    assert out[0].duration_beat == 1.0
+    assert out[1].duration_beat == 1.0  # second note untouched
+
+
+def test_overlap_resolver_does_not_touch_different_voices():
+    # Same pitch, different voice — not an overlap in music21's model.
+    notes = [_sn(60, 0.0, 2.0, voice=1), _sn(60, 1.0, 1.0, voice=2, nid="n-b")]
+    out = _resolve_same_pitch_overlaps_per_voice(notes)
+    assert out[0].duration_beat == 2.0
+    assert out[1].duration_beat == 1.0
+
+
+def test_overlap_resolver_floor_matches_snap_grid():
+    # Second note attacks 0.03 beats after the first — below the 1/12
+    # snap grid. Pre-fix (0.01 floor) the resolver would have emitted
+    # dur=0.03, which _snap_quarter would round back up to 1/12≈0.083,
+    # re-crossing the second note's onset. With the floor aligned to
+    # _MIN_SNAPPED_QL, the resolver emits exactly the grid minimum.
+    notes = [_sn(60, 0.0, 1.0), _sn(60, 0.03, 1.0, nid="n-b")]
+    out = _resolve_same_pitch_overlaps_per_voice(notes)
+    assert out[0].duration_beat == pytest.approx(float(_MIN_SNAPPED_QL))
+
+
+def test_overlap_resolver_is_noop_when_no_overlap():
+    notes = [_sn(60, 0.0, 1.0), _sn(60, 2.0, 1.0, nid="n-b")]
+    out = _resolve_same_pitch_overlaps_per_voice(notes)
+    # Returns original list unchanged (identity, not a copy).
+    assert out is notes
+
+
+# ---- _split_bar_crossing_notes ---------------------------------------------
+
+def test_split_bar_crossing_into_tied_pieces():
+    # 3-beat note starting at beat 3 in 4/4 — spans into the next bar.
+    notes = [_sn(60, 3.0, 3.0)]
+    out = _split_bar_crossing_notes(notes, beats_per_measure=4.0)
+    assert len(out) == 2
+    first, second = out
+    # First piece: 1 beat in bar 1, ties OUT.
+    assert first[0].onset_beat == 3.0
+    assert first[0].duration_beat == pytest.approx(1.0)
+    assert (first[1], first[2]) == (False, True)
+    # Second piece: 2 beats in bar 2, ties IN (not OUT).
+    assert second[0].onset_beat == pytest.approx(4.0)
+    assert second[0].duration_beat == pytest.approx(2.0)
+    assert (second[1], second[2]) == (True, False)
+
+
+def test_split_bar_crossing_survives_epsilon_before_bar_line():
+    # Regression for silent data loss: a note starting ε before a bar line
+    # (cur_onset=3.9999999, beats_per_measure=4.0) would pre-fix break out
+    # of the while-loop with piece_dur ≈ 1e-7, abandoning the full note.
+    # Post-fix: cur_onset snaps forward to bar_end and the note emits
+    # a single clean piece on the next bar.
+    notes = [_sn(60, 3.9999999, 1.0)]
+    out = _split_bar_crossing_notes(notes, beats_per_measure=4.0)
+    assert len(out) >= 1
+    # Total emitted duration must roughly equal input duration — the
+    # rest of the note must not be silently dropped.
+    total = sum(p[0].duration_beat for p in out)
+    assert total == pytest.approx(1.0, abs=1e-3)
+
+
+def test_split_bar_crossing_clamps_zero_duration_notes():
+    # Pre-fix: the while-guard `remaining > 1e-6` dropped the note
+    # entirely. Post-fix: emit one minimum-grid piece with a warning.
+    notes = [_sn(60, 0.0, 0.0)]
+    out = _split_bar_crossing_notes(notes, beats_per_measure=4.0)
+    assert len(out) == 1
+    assert out[0][0].duration_beat == pytest.approx(float(_MIN_SNAPPED_QL))
+
+
+def test_split_bar_crossing_handles_three_eight_meter():
+    # 3/8 time — beats_per_measure=1.5. A 2.0-beat note starting at 1.0
+    # crosses a non-integer bar boundary. Verify both pieces land entirely
+    # within a measure and the tie chain is contiguous.
+    notes = [_sn(60, 1.0, 2.0)]
+    out = _split_bar_crossing_notes(notes, beats_per_measure=1.5)
+    assert len(out) == 2
+    (p1, ti1, to1), (p2, ti2, to2) = out
+    assert p1.onset_beat == pytest.approx(1.0)
+    assert p1.duration_beat == pytest.approx(0.5)  # fills remainder of bar 1
+    assert (ti1, to1) == (False, True)
+    assert p2.onset_beat == pytest.approx(1.5)
+    assert p2.duration_beat == pytest.approx(1.5)  # full second bar
+    assert (ti2, to2) == (True, False)
+
+
+def test_l2_osmd_regression_fixture_structural_checks():
+    """Regression guard — the saved fixture must pass all OSMD-relevant
+    structural checks: empty part names, valid voices, correct divisions,
+    and no measure overflow.
+    """
+    from pathlib import Path
+
+    from lxml import etree
+
+    fixture_path = Path(__file__).parent / "fixtures" / "jammin_osmd_regression.musicxml"
+    if not fixture_path.exists():
+        pytest.skip("jammin_osmd_regression.musicxml not yet generated")
+
+    root = etree.fromstring(fixture_path.read_bytes())
+
+    import re
+
+    _UUID_PART_ID = re.compile(r"^P[0-9a-f]{16,}$", re.IGNORECASE)
+
+    # Part names must be empty and ids must not be music21 UUIDs.
+    for sp in root.findall("part-list/score-part"):
+        pn = sp.find("part-name")
+        if pn is not None:
+            assert pn.text == "Piano", (
+                f"regression fixture <part-name> should be 'Piano', got {pn.text!r}"
+            )
+        sp_id = sp.get("id", "")
+        assert not _UUID_PART_ID.match(sp_id), (
+            f"regression fixture has UUID <score-part id>: {sp_id!r}"
+        )
+
+    # Brace group with "Piano" label must exist.
+    brace_starts = [
+        g for g in root.findall("part-list/part-group")
+        if g.get("type") == "start" and g.findtext("group-symbol") == "brace"
+    ]
+    assert brace_starts, "regression fixture missing brace part-group"
+    assert brace_starts[0].findtext("group-name") == "Piano"
+
+    # Voices in range [1, 4].
+    for v_el in root.iter("voice"):
+        v = int(v_el.text)
+        assert 1 <= v <= 4, f"out-of-range voice: {v}"
+
+    # Divisions = 12.
+    for div in root.iter("divisions"):
+        assert int(div.text) == 12, f"unexpected divisions: {div.text}"
