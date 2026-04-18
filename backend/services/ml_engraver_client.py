@@ -24,6 +24,16 @@ class MLEngraverError(RuntimeError):
     """Raised when the engraver service cannot be reached or returns non-2xx."""
 
 
+# Catches the header-only placeholder that oh-sheet-ml-pipeline's /engrave
+# returns before a real seq2seq model is wired. A real transcription's
+# MusicXML runs many KB; the stub is a few hundred bytes of boilerplate.
+_STUB_MUSICXML_BYTE_CEILING = 500
+
+
+def _looks_like_stub(musicxml_bytes: bytes) -> bool:
+    return len(musicxml_bytes) < _STUB_MUSICXML_BYTE_CEILING
+
+
 async def engrave_midi_via_ml_service(midi_bytes: bytes) -> bytes:
     """POST MIDI bytes to the engraver service, return MusicXML bytes.
 
@@ -51,5 +61,13 @@ async def engrave_midi_via_ml_service(midi_bytes: bytes) -> bytes:
         )
 
     musicxml = response.content
+    if _looks_like_stub(musicxml):
+        log.warning(
+            "ml_engraver: engraver_inference=true but response appears to be "
+            "the ML pipeline stub placeholder (bytes_out=%d < %d). Confirm "
+            "a real model is deployed before trusting these artifacts.",
+            len(musicxml),
+            _STUB_MUSICXML_BYTE_CEILING,
+        )
     log.info("ml_engraver: success bytes_out=%d", len(musicxml))
     return musicxml

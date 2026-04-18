@@ -163,3 +163,49 @@ async def test_toggle_off_keeps_local_engrave(runner, blob, mock_ml_engraver):
     assert mock_ml_engraver == [], "ML engraver must not be called when toggle is off"
     assert result.musicxml_uri
     assert blob.get_bytes(result.musicxml_uri) != _FAKE_MUSICXML
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("toggle", [True, False])
+async def test_title_lookup_never_routes_through_ml_engraver(
+    runner, blob, monkeypatch, mock_ml_engraver, toggle,
+):
+    """Regression guard for runner.py:use_ml_engraver gating.
+
+    title_lookup jobs (TuneChat + cover_search fast-path) must never hit
+    the ML engraver service regardless of OHSHEET_ENGRAVER_INFERENCE.
+    TuneChat's fast-path integration depends on this invariant.
+    """
+    monkeypatch.setattr(settings, "engraver_inference", toggle)
+    # Keep TuneChat disabled so the pipeline falls through to Oh Sheet's
+    # own stages — that's where the source gate in runner.py lives.
+    monkeypatch.setattr(settings, "tunechat_enabled", False)
+
+    bundle = InputBundle(
+        audio=RemoteAudioFile(
+            uri="file:///fake/audio.wav",
+            format="wav",
+            sample_rate=44100,
+            duration_sec=10.0,
+            channels=1,
+        ),
+        metadata=InputMetadata(
+            title="Title Lookup Song",
+            artist="Tester",
+            source="title_lookup",
+        ),
+    )
+    config = PipelineConfig(variant="audio_upload", enable_refine=False)
+
+    result = await runner.run(
+        job_id=f"title-lookup-{toggle}",
+        bundle=bundle,
+        config=config,
+    )
+
+    assert mock_ml_engraver == [], (
+        f"title_lookup must bypass ML engraver (toggle={toggle}) — "
+        "TuneChat's fast-path depends on this."
+    )
+    assert result.musicxml_uri
+    assert blob.get_bytes(result.musicxml_uri) != _FAKE_MUSICXML

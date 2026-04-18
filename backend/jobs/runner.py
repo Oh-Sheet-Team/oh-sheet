@@ -438,6 +438,13 @@ class PipelineRunner:
                     )
 
                     if use_ml_engraver:
+                        # Intentional behavior change vs. the retired
+                        # OHSHEET_ML_API_URL gate: when this branch is taken,
+                        # ML engraver failures PROPAGATE as job errors rather
+                        # than degrading to the local music21 path. The
+                        # boolean toggle itself is the off-switch — operators
+                        # turn it off if the ML service is unhealthy, rather
+                        # than relying on silent fallback.
                         from backend.contracts import (  # noqa: PLC0415
                             ExpressionMap,
                             ExpressiveNote,
