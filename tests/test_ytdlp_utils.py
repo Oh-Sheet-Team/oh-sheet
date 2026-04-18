@@ -109,7 +109,10 @@ def test_stat_raising_oserror_is_graceful(
     path.write_text("x")
     _patch_path(monkeypatch, str(path))
 
-    def _raise(self):  # noqa: ARG001 — shimming Path.stat
+    def _raise(self, *args, **kwargs):  # noqa: ARG001 — shimming Path.stat
+        # Accept *args / **kwargs so Python-internal callers (like pytest's
+        # tmp_path teardown via follow_symlinks=True) don't hit TypeError
+        # while our monkeypatch of the Path class is still in scope.
         raise OSError("simulated stat() failure")
 
     monkeypatch.setattr(Path, "stat", _raise)
