@@ -435,6 +435,12 @@ function completeBody(job) {
       "aria-label": "Toggle fullscreen",
       title: "Fullscreen",
     }, icon("fullscreen"));
+    // Target the WRAPPER, not the iframe, so the button stays visible
+    // in fullscreen mode and the click-to-exit path is reachable.
+    // Requesting fullscreen on the iframe alone would hide the button
+    // (the button is its sibling, not a descendant), leaving Escape
+    // as the only exit.
+    const iframeStub = el("div", { class: "iframe-stub tunechat" }, frame, fullscreenBtn);
     fullscreenBtn.addEventListener("click", () => {
       // Exit if already fullscreen, otherwise enter. Swallow the
       // returned promise — failures are surfaced by the browser as
@@ -443,8 +449,8 @@ function completeBody(job) {
       try {
         if (document.fullscreenElement) {
           document.exitFullscreen();
-        } else if (typeof frame.requestFullscreen === "function") {
-          frame.requestFullscreen();
+        } else if (typeof iframeStub.requestFullscreen === "function") {
+          iframeStub.requestFullscreen();
         }
       } catch {
         // Older browsers / sandboxed iframes — silent no-op.
@@ -452,7 +458,7 @@ function completeBody(job) {
     });
     // .iframe-stub.tunechat triggers the fullscreen-ish mobile CSS
     // where the iframe fills the viewport and the card sheds its padding.
-    wrap.appendChild(el("div", { class: "iframe-stub tunechat" }, frame, fullscreenBtn));
+    wrap.appendChild(iframeStub);
   } else {
     wrap.appendChild(
       el(
