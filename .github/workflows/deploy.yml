@@ -63,7 +63,7 @@ jobs:
 
       # Build all three images with GitHub Actions layer cache.
       # The app image is the big win (~5 min uncached → ~1 min cached)
-      # because the pip-install-torch and flutter-build layers rarely
+      # because the pip-install-torch and frontend-build layers rarely
       # change and weigh ~2 GB combined.
       - name: Build and push app image
         uses: docker/build-push-action@v6
@@ -73,9 +73,6 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ github.sha }}
             ${{ env.IMAGE }}:latest
-          build-args: |
-            APP_VERSION=${{ steps.version.outputs.version }}
-            TUNECHAT_URL=${{ vars.OHSHEET_TUNECHAT_URL }}
           cache-from: type=gha,scope=app
           cache-to: type=gha,scope=app,mode=max
 

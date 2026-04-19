@@ -1,21 +1,29 @@
-# ---- Stage 1: Build Flutter web app ----
-FROM ghcr.io/cirruslabs/flutter:stable AS flutter-build
+# ---- Stage 1: Build frontend-v2 (vanilla-JS SPA via Vite) ----
+#
+# Replaces the previous Flutter build stage. frontend-v2 uses vanilla
+# JavaScript + Vite; build artifacts go to frontend-v2/dist. Bundle size
+# drops from ~6 MB (CanvasKit WASM + Dart runtime) to ~100 KB.
+#
+# node:20-slim is ~300 MB vs the Flutter SDK's ~3 GB — saves ~3-5 min
+# off every qa deploy.
+#
+# TUNECHAT_URL dart-define is no longer needed: views.js derives the
+# TuneChat origin at runtime from the backend's tunechat_preview_image_url
+# field (which is stamped with the configured public base URL). No build
+# arg required.
+#
+# API_BASE_URL is unused too — frontend-v2 uses same-origin relative
+# URLs exclusively (served by the same backend on /).
+FROM node:20-slim AS frontend-build
+WORKDIR /app/frontend-v2
 
-WORKDIR /app/frontend
-COPY frontend/ .
-RUN flutter pub get
-# Empty API_BASE_URL → client uses same-origin relative URLs (/v1/...)
-ARG APP_VERSION=dev
-# TUNECHAT_URL is read via String.fromEnvironment in result_screen.dart
-# at dart-define time (not runtime), so it's baked into the JS bundle.
-# Empty default is safe — result_screen.dart only uses it when a job
-# has a tunechat_job_id set, which only happens when the backend's
-# OHSHEET_TUNECHAT_ENABLED flag is true.
-ARG TUNECHAT_URL=
-RUN flutter build web --release \
-      --dart-define=API_BASE_URL= \
-      --dart-define=APP_VERSION=${APP_VERSION} \
-      --dart-define=TUNECHAT_URL=${TUNECHAT_URL}
+# package-lock.json first so Docker caches npm ci separately from src
+COPY frontend-v2/package.json frontend-v2/package-lock.json ./
+RUN npm ci
+
+# Sources + assets, then build
+COPY frontend-v2/ .
+RUN npm run build
 
 # ---- Stage 2: Shared Python base ----
 # Layers common to both the `api` and `ml` final targets: interpreter,
@@ -79,8 +87,11 @@ FROM python-base AS api
 # --platform linux/amd64 if targeting Apple Silicon hosts.
 RUN pip install --no-cache-dir --retries 5 --timeout 120 ".[pop2piano]"
 
-# Copy Flutter web build into a directory the backend will serve
-COPY --from=flutter-build /app/frontend/build/web /app/static
+# Copy frontend-v2's Vite build output into the static dir the backend
+# serves. backend/main.py mounts /app/static as a catch-all StaticFiles
+# route (see main.py _STATIC_DIR), so whatever lands here is what users
+# see at the root URL.
+COPY --from=frontend-build /app/frontend-v2/dist /app/static
 
 # Cloud Run sets PORT; default to 8080
 ENV PORT=8080
