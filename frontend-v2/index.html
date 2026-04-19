@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Oh Sheet!</title>
+<meta name="description" content="Turn any song into piano sheet music — upload audio, paste a YouTube link, or drop a MIDI file." />
+<meta name="theme-color" content="#FDF4E8" />
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<!-- iOS home-screen icon: iOS <=14 ignores SVG, but 15+ supports it.
+     For broader coverage we could add a 180×180 PNG export — not
+     critical for the demo, the mascot shows in-app. -->
+<link rel="apple-touch-icon" href="/favicon.svg" />
+<link rel="mask-icon" href="/favicon.svg" color="#2D2D44" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet">
+<link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+<header class="appbar">
+  <div class="logo-wrap">
+    <span class="sparkle s1"></span>
+    <span class="sparkle s2"></span>
+    <span class="sparkle s3"></span>
+    <span class="sparkle s4"></span>
+    <img class="logo" id="mascot" src="/mascots/mascot-home-happy.svg" alt="Oh Sheet mascot" />
+  </div>
+  <div class="tagline"><strong>Turn any song into piano sheet music</strong></div>
+  <div class="tagline">Upload audio, paste a YouTube link, or drop a MIDI file.</div>
+</header>
+
+<main class="page">
+  <section class="card" id="card" aria-live="polite"></section>
+
+  <footer class="how-it-works" id="how-it-works">
+    <div class="steps-row">
+      <div class="hw-step">
+        <div class="hw-icon" style="--hw-color: var(--accent)">
+          <span class="material-symbols-rounded">link</span>
+        </div>
+        <span class="hw-label">Paste a link</span>
+      </div>
+      <span class="hw-dots">&middot;&middot;&middot;</span>
+      <div class="hw-step">
+        <div class="hw-icon" style="--hw-color: var(--warn)">
+          <span class="material-symbols-rounded">auto_awesome</span>
+        </div>
+        <span class="hw-label">AI transcribes</span>
+      </div>
+      <span class="hw-dots">&middot;&middot;&middot;</span>
+      <div class="hw-step">
+        <div class="hw-icon" style="--hw-color: var(--primary)">
+          <span class="material-symbols-rounded">music_note</span>
+        </div>
+        <span class="hw-label">Get sheet music</span>
+      </div>
+    </div>
+    <p class="powered-by"><span class="powered-dot"></span>Powered by AI</p>
+  </footer>
+</main>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

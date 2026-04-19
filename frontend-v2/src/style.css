@@ -1,0 +1,367 @@
+/* ── Oh Sheet frontend-v2 — cream palette + card morph ──────────── */
+
+:root {
+  --bg: #FDF4E8;
+  --surface: #FFFBF3;
+  --surface-container-high: #F7ECD9;
+  --primary: #EC6B7B;
+  --primary-container: #FFD9DE;
+  --accent: #3FC0B3;
+  --accent-container: #CFF0EC;
+  --ink: #2D2D44;
+  --on-surface: #2D2D44;
+  --on-surface-variant: #6B6B80;
+  --stroke: #2D2D44;
+  --error: #E4564A;
+  --error-container: #FADAD6;
+  --warn: #E89B3A;
+  --warn-container: #FCE5C2;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg); color: var(--on-surface);
+  font: 14px/1.4 Roboto, -apple-system, system-ui, sans-serif;
+}
+.material-symbols-rounded {
+  font-variation-settings: "FILL" 0, "wght" 400;
+  vertical-align: middle;
+}
+
+/* ── App bar (brand + mascot) ─────────────────────────────────── */
+.appbar {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 24px 16px 8px; gap: 4px;
+}
+/* Wide 1376×768 aspect matches 6/7 mascots natively; the square
+   home-happy.svg gets centered with ~50px of horizontal padding via
+   object-fit: contain. Prevents the "squish" where wide mascots
+   rendered as 160×90 inside a 160×160 container. */
+.logo-wrap {
+  position: relative;
+  width: 280px;
+  aspect-ratio: 1376 / 768;
+  display: flex; align-items: center; justify-content: center;
+}
+.logo {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  animation: bob 3.2s ease-in-out infinite;
+  /* Rotate around the image's own visual bottom, not the container's —
+     with object-fit:contain the image is centered, so center-bottom
+     of the container IS roughly the bottom of the image. */
+  transform-origin: center bottom;
+  transition: opacity .3s;
+}
+.logo.swap { opacity: 0; }
+@keyframes bob {
+  0%, 100% { transform: translateY(0) rotate(-1.5deg); }
+  50%      { transform: translateY(-6px) rotate(1.5deg); }
+}
+.sparkle {
+  position: absolute; width: 10px; height: 10px; border-radius: 50%;
+  animation: twinkle 2.4s ease-in-out infinite;
+}
+.sparkle.s1 { top: 10%;  left: 8%;  background: #F5C94A; animation-delay: 0s; }
+.sparkle.s2 { top: 20%;  right: 4%; background: #6BBFE8; animation-delay: .5s; }
+.sparkle.s3 { bottom: 14%; left: 2%; background: #6BE8A8; animation-delay: 1s; }
+.sparkle.s4 { bottom: 8%; right: 8%; background: #F49BB0; animation-delay: 1.5s; }
+@keyframes twinkle {
+  0%, 100% { opacity: 0; transform: scale(.5); }
+  50%      { opacity: 1; transform: scale(1); }
+}
+.tagline {
+  font-size: 14px; color: var(--on-surface-variant); text-align: center; max-width: 420px;
+}
+.tagline strong { color: var(--ink); font-size: 18px; display: block; margin-bottom: 2px; }
+
+/* Tagline is instructional copy for the Idle state — once a job is
+   running or done, it wastes vertical space above the card. Hide on
+   every non-idle phase so the sheet / progress / error view can breathe. */
+body[data-phase="working"] .tagline,
+body[data-phase="complete"] .tagline,
+body[data-phase="error"] .tagline,
+body[data-phase="submitting"] .tagline { display: none; }
+
+/* ── Card (morphs across phases) ──────────────────────────────── */
+.page {
+  min-height: 50vh;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 24px 16px 120px;
+}
+.card {
+  width: min(560px, 100%);
+  background: var(--surface);
+  border: 2px solid var(--stroke);
+  border-radius: 24px;
+  padding: 24px;
+  box-shadow: 0 2px 0 var(--stroke);
+  transition: transform .45s cubic-bezier(.2,.9,.2,1);
+}
+.card.morph { transform: scale(.985); }
+.body { animation: fadeUp .4s ease both; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* ── Segmented source picker ──────────────────────────────────── */
+.segmented {
+  display: flex; border: 2px solid var(--stroke); border-radius: 999px;
+  overflow: hidden; margin-bottom: 20px; background: var(--surface); padding: 2px; gap: 2px;
+}
+.seg {
+  flex: 1; padding: 8px 12px; text-align: center;
+  font: inherit; font-weight: 500;
+  color: var(--ink); cursor: pointer; border: 0;
+  background: transparent; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+}
+.seg.on { background: var(--accent); color: #fff; }
+.seg.on .material-symbols-rounded { color: #fff; }
+.seg:hover:not(.on) { background: rgba(63,192,179,.08); }
+
+/* ── Fields (pill inputs) ─────────────────────────────────────── */
+.field { position: relative; margin-bottom: 12px; }
+.field input {
+  width: 100%; padding: 14px 20px; border: 2px solid var(--stroke);
+  border-radius: 999px; font: inherit; background: var(--surface); color: var(--ink);
+}
+.field input::placeholder { color: var(--on-surface-variant); }
+.field input:focus { outline: none; border-color: var(--accent); }
+.field .field-icon {
+  position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+  color: var(--ink); pointer-events: none;
+}
+.field.with-icon input { padding-left: 46px; }
+
+/* ── Buttons ──────────────────────────────────────────────────── */
+.btn-outlined {
+  padding: 12px 20px; border: 2px solid var(--stroke); border-radius: 999px;
+  background: var(--surface); color: var(--ink); font-weight: 600; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px; width: 100%; justify-content: center;
+  font-family: inherit;
+}
+.btn-outlined:hover { background: var(--surface-container-high); }
+.btn-filled {
+  padding: 14px 24px; border: 2px solid var(--stroke); border-radius: 999px;
+  background: linear-gradient(180deg, #4A4A5E, #2D2D44);
+  color: #fff; font-weight: 700; cursor: pointer; font-size: 15px;
+  display: inline-flex; align-items: center; gap: 8px; width: 100%; justify-content: center;
+  box-shadow: 0 2px 0 var(--stroke); font-family: inherit;
+}
+.btn-filled:hover { filter: brightness(1.08); }
+.btn-filled:disabled {
+  background: #B8B8C4; color: #fff; cursor: not-allowed;
+  border-color: #B8B8C4; box-shadow: none;
+}
+.btn-text {
+  padding: 10px 16px; border: 0; background: transparent; color: var(--primary);
+  font-weight: 600; cursor: pointer; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 6px; font-family: inherit;
+}
+.btn-text:hover { background: var(--primary-container); }
+
+.actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+
+/* ── Submitting spinner ───────────────────────────────────────── */
+.m3-spinner {
+  width: 48px; height: 48px; margin: 20px auto; display: block;
+  animation: spin 1.4s linear infinite;
+}
+.m3-spinner circle {
+  fill: none; stroke: var(--accent); stroke-width: 4;
+  stroke-linecap: round; stroke-dasharray: 80 200;
+  animation: dash 1.4s ease-in-out infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes dash {
+  0% { stroke-dashoffset: 0; }
+  50% { stroke-dashoffset: -60; }
+  100% { stroke-dashoffset: -120; }
+}
+.status-text { text-align: center; color: var(--on-surface-variant); font-size: 14px; margin: 0; }
+.status-text strong { color: var(--ink); display: block; margin-bottom: 4px; font-size: 16px; }
+
+/* ── Working: stepper + progress bar ──────────────────────────── */
+.stepper { display: flex; gap: 8px; margin: 8px 0 20px; flex-wrap: wrap; }
+.step {
+  flex: 1; min-width: 0; padding: 10px 12px; border-radius: 999px;
+  background: var(--surface); border: 2px solid var(--stroke);
+  font-size: 13px; color: var(--ink); font-weight: 500;
+  display: flex; align-items: center; gap: 6px; justify-content: center;
+  transition: all .3s;
+}
+.step.active {
+  background: var(--accent); color: #fff;
+  animation: pulse 1.8s ease-in-out infinite;
+}
+.step.active .material-symbols-rounded { color: #fff; }
+.step.done { background: var(--accent-container); color: var(--ink); }
+.step.done .material-symbols-rounded { color: var(--accent); }
+.step .material-symbols-rounded { font-size: 18px; }
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(63,192,179,.5); }
+  50%      { box-shadow: 0 0 0 8px rgba(63,192,179,0); }
+}
+
+.bar {
+  height: 6px; background: var(--surface-container-high); border-radius: 999px;
+  overflow: hidden; border: 2px solid var(--stroke); padding: 0;
+}
+.bar > span {
+  display: block; height: 100%; background: var(--accent);
+  border-radius: 999px; transition: width .6s;
+}
+.meta {
+  display: flex; justify-content: space-between; margin-top: 10px;
+  font-size: 13px; color: var(--on-surface-variant); font-weight: 500;
+}
+
+/* ── Complete phase ───────────────────────────────────────────── */
+.iframe-stub, .inline-render {
+  height: min(70vh, 720px); background: var(--surface);
+  border: 2px solid var(--stroke); border-radius: 20px;
+  margin-bottom: 16px; overflow: hidden;
+}
+.iframe-stub iframe {
+  width: 100%; height: 100%; border: 0; display: block;
+}
+.iframe-stub.tunechat { height: min(80vh, 760px); }
+.inline-render {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  color: var(--on-surface-variant); gap: 8px;
+}
+.inline-render .material-symbols-rounded { font-size: 48px; color: var(--accent); }
+
+.downloads { display: flex; gap: 8px; flex-wrap: wrap; }
+.assist-chip {
+  padding: 10px 16px; border-radius: 999px; background: var(--surface);
+  border: 2px solid var(--stroke); color: var(--ink); font-size: 13px; font-weight: 600;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+}
+.assist-chip .material-symbols-rounded { font-size: 18px; color: var(--primary); }
+.assist-chip:hover { background: var(--primary-container); }
+
+.banner {
+  background: var(--warn-container); color: var(--ink);
+  padding: 12px 16px; border-radius: 16px; font-size: 13px; margin-top: 16px;
+  display: flex; align-items: center; gap: 10px; border: 2px solid var(--stroke);
+}
+.banner .material-symbols-rounded { font-size: 20px; color: var(--warn); }
+
+/* ── Error phase ──────────────────────────────────────────────── */
+.err-box {
+  background: var(--error-container); color: var(--ink);
+  padding: 16px; border-radius: 20px; margin-bottom: 16px;
+  display: flex; gap: 12px; border: 2px solid var(--stroke);
+}
+.err-box .material-symbols-rounded { color: var(--error); }
+.err-box h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; color: var(--ink); }
+.err-box p { margin: 0; font-size: 13px; color: var(--ink); }
+
+/* ── How it works footer ──────────────────────────────────────── */
+.how-it-works {
+  width: min(420px, 100%); margin-top: 28px;
+}
+.steps-row {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+}
+.hw-step {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  flex: 1; min-width: 0;
+}
+.hw-icon {
+  width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--hw-color) 12%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--stroke) 15%, transparent);
+}
+.hw-icon .material-symbols-rounded { font-size: 24px; color: var(--hw-color); }
+.hw-label {
+  font-size: 12px; font-weight: 700; color: var(--ink); text-align: center;
+}
+.hw-dots {
+  font-size: 16px; color: color-mix(in srgb, var(--stroke) 25%, transparent);
+  letter-spacing: 2px; margin-bottom: 24px;
+}
+.powered-by {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  font-size: 12px; font-weight: 600; color: var(--on-surface-variant);
+  margin-top: 20px; opacity: .7;
+}
+.powered-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  display: inline-block;
+}
+
+/* ── Entry animations (staggered on load) ────────────────────── */
+.appbar { animation: fadeSlideDown .5s ease both; }
+.appbar .logo-wrap { animation: fadeIn .4s ease both; }
+.appbar .tagline { animation: fadeIn .5s ease both .1s; }
+.card { animation: fadeSlideUp .5s ease both .2s; }
+.how-it-works { animation: fadeIn .5s ease both .4s; }
+
+@keyframes fadeSlideDown {
+  from { opacity: 0; transform: translateY(-12px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── CTA pulse when form becomes valid ───────────────────────── */
+.btn-filled.pulse {
+  animation: ctaPulse .35s ease;
+}
+@keyframes ctaPulse {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
+
+/* ── Drag-and-drop hint on file picker ───────────────────────── */
+.btn-outlined.drop-active {
+  border-color: var(--accent);
+  background: var(--accent-container);
+}
+
+/* ── Mobile (≤600px) ──────────────────────────────────────────── */
+@media (max-width: 600px) {
+  .appbar { padding: 16px 12px 4px; }
+  /* Mobile: preserve the wide aspect ratio, just smaller. */
+  .logo-wrap { width: 200px; aspect-ratio: 1376 / 768; height: auto; }
+  .card { padding: 20px 16px; border-radius: 20px; }
+
+  /* Stepper wraps to 2×2 grid so labels stay readable on narrow screens */
+  .stepper { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .step { flex: initial; padding: 8px 10px; font-size: 12px; }
+
+  /* Keep download chips in a single inline row on mobile. Each chip
+     uses flex:1 so they share the available width equally. */
+  .downloads { flex-direction: row; gap: 6px; }
+  .assist-chip {
+    flex: 1; min-width: 0;
+    justify-content: center;
+    padding: 10px 6px;
+    font-size: 12px;
+  }
+  .assist-chip .material-symbols-rounded { font-size: 16px; }
+
+  .actions { flex-direction: column; align-items: stretch; }
+  .btn-filled, .btn-text { width: 100%; justify-content: center; }
+
+  .iframe-stub, .inline-render { height: 50vh; }
+
+  .seg { padding: 10px 6px; font-size: 13px; }
+  .seg .material-symbols-rounded { font-size: 18px; }
+}
+
+/* Touch targets — ensure 44×44 on any touch device */
+@media (hover: none) {
+  .btn-outlined, .btn-filled, .btn-text, .seg, .assist-chip { min-height: 44px; }
+}
