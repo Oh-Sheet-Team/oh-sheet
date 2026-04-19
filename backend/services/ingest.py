@@ -141,9 +141,17 @@ def _download_youtube_sync(url: str, blob_store) -> tuple[RemoteAudioFile, str |
         ), info.get("title"), info.get("uploader") or info.get("channel")
 
 
-def _maybe_swap_for_cover_sync(url: str) -> str:
-    """If a high-scoring clean source for ``url`` exists, return its URL;
-    otherwise return ``url`` unchanged.
+def _maybe_swap_for_cover_sync(
+    url: str,
+) -> tuple[str, str | None, str | None]:
+    """Probe ``url``, optionally swap for a clean piano cover, and return
+    ``(final_url, extracted_title, extracted_artist)``.
+
+    The ``extracted_title`` / ``extracted_artist`` are from the
+    ORIGINAL URL's metadata (via "Artist - Song" dash split), not the
+    swapped URL's. They reflect the user's search intent and are used
+    by the caller to populate the sheet music's title/composer fields.
+    Both may be ``None`` if metadata couldn't be probed.
 
     This is the ingest stage's "fast path" router (see
     ``backend/services/cover_search.py``). The rationale: Basic Pitch
@@ -167,11 +175,11 @@ def _maybe_swap_for_cover_sync(url: str) -> str:
         probed = probe_youtube_metadata(url)
     except Exception as exc:  # noqa: BLE001 — silent-failure boundary
         log.warning("ingest: cover_search probe crashed for %r: %s", url, exc)
-        return url
+        return url, None, None
 
     if probed is None:
         log.info("ingest: cover_search could not probe metadata for %r", url)
-        return url
+        return url, None, None
 
     raw_title, yt_uploader = probed
     # YouTube uploaders (e.g. "Too Much Music") are NOT the real artist.
@@ -196,6 +204,11 @@ def _maybe_swap_for_cover_sync(url: str) -> str:
     else:
         title = raw_title
         artist = None
+    # Strip trailing parens like "(Official Video)", "(Piano Cover)",
+    # "[Audio]" — they pollute the sheet music title but don't change
+    # what song it is.
+    title = re.sub(r"\s*[\(\[][^)\]]+[\)\]]\s*$", "", title).strip() or title
+
     try:
         match = find_clean_source(
             title,
@@ -206,14 +219,17 @@ def _maybe_swap_for_cover_sync(url: str) -> str:
                               # is documented silent-failure but we must never
                               # crash the job on a cover-search bug.
         log.warning("ingest: cover_search find crashed for %r: %s", title, exc)
-        return url
+        # Return the extracted title/artist even when search fails — they're
+        # derived from the user's URL and are always better than the raw
+        # yt-dlp title that _download_youtube_sync surfaces later.
+        return url, title, artist
 
     if match is None:
         log.info(
             "ingest: cover_search no match for title=%r artist=%r — using original URL",
             title, artist,
         )
-        return url
+        return url, title, artist
 
     # Defense-in-depth (PR #47 review, Critical): even with the
     # _normalize_entry_url fix upstream in _yt_dlp_search, we refuse
@@ -226,13 +242,17 @@ def _maybe_swap_for_cover_sync(url: str) -> str:
             "ingest: cover_search returned non-YouTube URL %r — falling back to original",
             match.url,
         )
-        return url
+        return url, title, artist
 
     log.info(
         "ingest: cover_search SWAP url=%r → %r (channel=%r score=%d)",
         url, match.url, match.channel, match.score,
     )
-    return match.url
+    # Return the swapped URL plus the ORIGINAL URL's extracted metadata.
+    # The swap changes where we get audio from (a cleaner piano cover),
+    # but the sheet music header should reflect the user's search intent:
+    # "Beat It - Michael Jackson" regardless of whose cover we transcribed.
+    return match.url, title, artist
 
 
 def _file_path(uri: str) -> Path | None:
@@ -325,21 +345,34 @@ class IngestService:
             # disable the feature globally without any per-request change.
             # The helper enforces the silent-failure contract — any
             # failure returns ``download_url`` unchanged.
+            cover_extracted_title: str | None = None
+            cover_extracted_artist: str | None = None
             if (
                 payload.metadata.prefer_clean_source
                 and settings.cover_search_enabled
             ):
-                download_url = await asyncio.to_thread(
+                swap_result = await asyncio.to_thread(
                     _maybe_swap_for_cover_sync, download_url,
                 )
+                download_url, cover_extracted_title, cover_extracted_artist = swap_result
 
             dl_result = await asyncio.to_thread(
                 _download_youtube_sync, download_url, self._blob_store,
             )
             audio, yt_title, yt_artist = dl_result
-            if yt_title:
+            # Prefer cover_search's split-extracted title/artist (from the
+            # ORIGINAL URL's metadata) over yt_title (the downloaded video's
+            # raw title, which can be a messy cover-channel name like
+            # "BEAT IT - Michael Jackson x Peter Bence (Piano Cover)").
+            # This makes the sheet music header read "Beat It - Michael
+            # Jackson" regardless of whose cover we ended up transcribing.
+            if cover_extracted_title:
+                metadata_update["title"] = cover_extracted_title
+            elif yt_title:
                 metadata_update["title"] = yt_title
-            if yt_artist and not payload.metadata.artist:
+            if cover_extracted_artist and not payload.metadata.artist:
+                metadata_update["artist"] = cover_extracted_artist
+            elif yt_artist and not payload.metadata.artist:
                 metadata_update["artist"] = yt_artist
 
         if audio is not None:

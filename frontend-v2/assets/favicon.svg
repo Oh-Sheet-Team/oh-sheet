@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!--
+    Oh Sheet! favicon — rounded cream square with a dark stroke,
+    teal eighth-note centered. Matches the app's cream+coral+teal
+    card style. Designed to stay legible at 16×16 through 64×64.
+  -->
+  <!-- Card backdrop with drop-offset (matches the card in-app) -->
+  <rect x="4" y="4" width="56" height="56" rx="14" ry="14"
+        fill="#FFFBF3" stroke="#2D2D44" stroke-width="4" />
+  <!-- Eighth note — stem + flag + head -->
+  <g fill="#3FC0B3" stroke="#2D2D44" stroke-width="3" stroke-linejoin="round">
+    <!-- Note head (ellipse tilted) -->
+    <ellipse cx="24" cy="44" rx="8" ry="6" transform="rotate(-18 24 44)" />
+    <!-- Stem -->
+    <rect x="30" y="18" width="3.5" height="26" rx="1" />
+    <!-- Flag -->
+    <path d="M 33.5 18 Q 46 22 44 38 Q 42 30 33.5 28 Z" />
+  </g>
+</svg>
