@@ -82,3 +82,139 @@ def test_artifact_job_not_yet_succeeded(client):
     assert response.status_code in (200, 409)
     if response.status_code == 409:
         assert "artifacts unavailable" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# TuneChat proxy — used for jobs that went through the TuneChat-only fast
+# path. Local blob URIs are empty strings in that case; the endpoint must
+# fall through to the tunechat_*_url field and stream the file back with
+# Content-Disposition so the client's <a download> works reliably.
+# ---------------------------------------------------------------------------
+
+
+def _install_tunechat_job(client, *, pdf: str | None, musicxml: str | None, midi: str | None) -> str:
+    """Submit a midi job and patch its EngravedOutput to look like a
+    TuneChat-fast-path result: empty blob URIs + populated tunechat URLs.
+    Returns the job_id."""
+    from backend.jobs.manager import JobManager
+    from backend.api.deps import get_job_manager
+
+    job_id = _submit_midi_job(client)
+    _wait_for_succeeded(client, job_id)
+
+    # Reach into the in-memory JobManager used by this TestClient app.
+    manager: JobManager = client.app.dependency_overrides.get(
+        get_job_manager, get_job_manager
+    )()
+    record = manager.get(job_id)
+    assert record is not None and record.result is not None
+    record.result = record.result.model_copy(update={
+        "musicxml_uri": "",
+        "humanized_midi_uri": "",
+        "pdf_uri": None,
+        "tunechat_job_id": "tc-fake-123",
+        "tunechat_pdf_url": pdf,
+        "tunechat_musicxml_url": musicxml,
+        "tunechat_midi_url": midi,
+    })
+    return job_id
+
+
+def test_artifact_proxies_musicxml_from_tunechat(client, monkeypatch):
+    """When tunechat_musicxml_url is set, the endpoint proxies the fetch
+    and returns the bytes with Content-Disposition: attachment."""
+    import httpx
+
+    upstream_body = b"<?xml version='1.0'?><score-partwise/>"
+
+    class FakeResponse:
+        status_code = 200
+        content = upstream_body
+        def raise_for_status(self): pass
+
+    class FakeClient:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url):
+            assert url == "https://tunechat.example/pipeline/tc-fake-123/score.musicxml"
+            return FakeResponse()
+
+    monkeypatch.setattr("backend.api.routes.artifacts.httpx.Client", FakeClient)
+
+    job_id = _install_tunechat_job(
+        client,
+        pdf="https://tunechat.example/pipeline/tc-fake-123/sheet.pdf",
+        musicxml="https://tunechat.example/pipeline/tc-fake-123/score.musicxml",
+        midi="https://tunechat.example/pipeline/tc-fake-123/notation.mid",
+    )
+    response = client.get(f"/v1/artifacts/{job_id}/musicxml")
+    assert response.status_code == 200
+    assert response.content == upstream_body
+    assert response.headers["content-type"] == "application/vnd.recordare.musicxml+xml"
+    # Critical: the <a download> attribute is unreliable across cross-origin
+    # redirects, so we set Content-Disposition server-side to force the
+    # download regardless of the user's browser.
+    assert "attachment" in response.headers["content-disposition"]
+    assert ".musicxml" in response.headers["content-disposition"]
+
+
+def test_artifact_proxies_pdf_from_tunechat(client, monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        content = b"%PDF-1.4 fake"
+        def raise_for_status(self): pass
+
+    class FakeClient:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url): return FakeResponse()
+
+    monkeypatch.setattr("backend.api.routes.artifacts.httpx.Client", FakeClient)
+
+    job_id = _install_tunechat_job(
+        client,
+        pdf="https://tunechat.example/pipeline/tc-fake-123/sheet.pdf",
+        musicxml=None,
+        midi=None,
+    )
+    response = client.get(f"/v1/artifacts/{job_id}/pdf")
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+    assert response.headers["content-type"] == "application/pdf"
+
+
+def test_artifact_falls_back_to_blob_when_no_tunechat_url(client):
+    """Audio/midi-upload paths never set tunechat_*_url — the old blob-
+    store code path must still work unchanged."""
+    job_id = _submit_midi_job(client)
+    _wait_for_succeeded(client, job_id)
+    response = client.get(f"/v1/artifacts/{job_id}/musicxml")
+    assert response.status_code == 200
+    assert b"score-partwise" in response.content
+
+
+def test_artifact_upstream_failure_returns_502(client, monkeypatch):
+    """If the TuneChat proxy fetch fails (network, 5xx, timeout), the
+    endpoint returns 502 rather than 500 — distinguishes upstream
+    trouble from a missing/corrupt local artifact."""
+    import httpx
+
+    class FakeClient:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url):
+            raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr("backend.api.routes.artifacts.httpx.Client", FakeClient)
+
+    job_id = _install_tunechat_job(
+        client,
+        pdf=None,
+        musicxml="https://tunechat.example/pipeline/tc-fake-123/score.musicxml",
+        midi=None,
+    )
+    response = client.get(f"/v1/artifacts/{job_id}/musicxml")
+    assert response.status_code == 502
