@@ -30,6 +30,61 @@ function findButtonByText(root, text) {
   );
 }
 
+describe("renderPhase — clipboard paste gating", () => {
+  // Safari (and to a lesser extent Chrome/Firefox) require a user
+  // gesture before navigator.clipboard.readText() resolves. Calling
+  // it during initial render throws a silent NotAllowedError. The
+  // auto-paste should only fire when the user actually interacts
+  // with the URL input (first focus).
+  let readTextMock;
+  let origClipboard;
+  beforeEach(() => {
+    readTextMock = vi.fn().mockResolvedValue("");
+    origClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText: readTextMock },
+    });
+  });
+  afterEach(() => {
+    if (origClipboard === undefined) {
+      delete navigator.clipboard;
+    } else {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: origClipboard,
+      });
+    }
+  });
+
+  it("does NOT read clipboard during initial render (no user gesture yet)", () => {
+    renderPhase(container, { name: "idle", source: "youtube" }, handlers);
+    expect(readTextMock).not.toHaveBeenCalled();
+  });
+
+  it("reads clipboard when the URL input receives focus (gesture)", () => {
+    renderPhase(container, { name: "idle", source: "youtube" }, handlers);
+    const urlInput = [...container.querySelectorAll("input[type='text']")].find(
+      (i) => (i.placeholder || "").toLowerCase().includes("youtube"),
+    );
+    urlInput.dispatchEvent(new Event("focus", { bubbles: true }));
+    expect(readTextMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads clipboard at most once per render even on repeated focuses", () => {
+    // Once we've tried to auto-fill, don't nag the user on every
+    // subsequent focus — they can paste manually if they want.
+    renderPhase(container, { name: "idle", source: "youtube" }, handlers);
+    const urlInput = [...container.querySelectorAll("input[type='text']")].find(
+      (i) => (i.placeholder || "").toLowerCase().includes("youtube"),
+    );
+    urlInput.dispatchEvent(new Event("focus", { bubbles: true }));
+    urlInput.dispatchEvent(new Event("blur", { bubbles: true }));
+    urlInput.dispatchEvent(new Event("focus", { bubbles: true }));
+    expect(readTextMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("renderPhase — idle / youtube", () => {
   beforeEach(() => {
     renderPhase(container, { name: "idle", source: "youtube" }, handlers);

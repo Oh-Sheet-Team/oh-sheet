@@ -250,8 +250,18 @@ function idleBody(source, handlers) {
       }
     });
     wrap.appendChild(a.wrap);
-    // Auto-paste from clipboard if it contains a YouTube URL.
-    if (!urlInput.value) tryPasteYoutube(urlInput);
+    // Auto-paste from clipboard on first focus, not during render.
+    // Safari requires a user gesture for navigator.clipboard.readText()
+    // — calling it during render throws a silent NotAllowedError,
+    // and Chrome/Firefox show a permission prompt with no gesture in
+    // flight. Gating on focus means "the user just clicked/tabbed
+    // into the URL field" is the gesture we piggyback on.
+    let pasteAttempted = false;
+    urlInput.addEventListener("focus", () => {
+      if (pasteAttempted || urlInput.value) return;
+      pasteAttempted = true;
+      tryPasteYoutube(urlInput);
+    });
   }
 
   wrap.appendChild(spacer(8));
