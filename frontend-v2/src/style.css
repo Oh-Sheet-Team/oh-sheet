@@ -233,12 +233,17 @@ body[data-phase="submitting"] .tagline { display: none; }
 }
 .iframe-stub.tunechat { height: min(80vh, 760px); }
 
-/* Fullscreen overlay button — top-right corner of the iframe wrap,
-   matching YouTube / Vimeo / Figma convention. Hover-reveals on
-   desktop so the chrome stays minimal; always visible on touch. */
+/* Fullscreen overlay button — bottom-right corner of the iframe wrap.
+   Originally placed top-right (YouTube/Vimeo convention), but the
+   TuneChat embed renders its own Play/Pause/Stop controls in the
+   same top-right region, causing a visual collision on hover. The
+   iframe's bottom-right is only occupied by small attribution text,
+   so the overlay can live there without fighting for pixels with
+   interactive chrome. Hover-reveals on desktop; always visible on
+   touch. */
 .fullscreen-btn {
   position: absolute;
-  top: 12px; right: 12px;
+  bottom: 12px; right: 12px;
   width: 36px; height: 36px;
   display: inline-flex; align-items: center; justify-content: center;
   background: rgba(0, 0, 0, 0.55);
