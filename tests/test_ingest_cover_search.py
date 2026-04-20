@@ -548,6 +548,33 @@ class TestMetadataFromCoverSearchWinsOverDownload:
         assert result.metadata.title == "Bohemian Rhapsody"
         assert result.metadata.artist == "Queen"
 
+    def test_multiple_trailing_brackets_are_all_stripped(self, service):
+        # YouTube uploaders frequently stack multiple parenthetical tags:
+        #   "Song [Remastered] (Official Video)"
+        #   "Song (Live at Wembley) [4K HDR]"
+        # The old single-pass regex only stripped the last bracket. This
+        # test locks in the loop-until-stable behavior so ALL trailing
+        # provenance tags get removed, no matter how many the uploader
+        # packed in.
+        bundle = _make_bundle(prefer_clean_source=True)
+
+        with (
+            patch("backend.services.ingest.probe_youtube_metadata") as mock_probe,
+            patch("backend.services.ingest.find_clean_source") as mock_find,
+            patch("backend.services.ingest._download_youtube_sync") as mock_dl,
+        ):
+            mock_probe.return_value = (
+                "Queen - Bohemian Rhapsody [Remastered] (Official Video) [4K HDR]",
+                "Queen",
+            )
+            mock_find.return_value = None
+            mock_dl.side_effect = lambda url, _bs: _fake_downloaded_audio(url)
+
+            result = asyncio.run(service.run(bundle))
+
+        assert result.metadata.title == "Bohemian Rhapsody"
+        assert result.metadata.artist == "Queen"
+
     def test_extracted_values_survive_when_no_swap_happens(self, service):
         # Even when cover_search finds no match (returns None), the
         # extracted title/artist should still propagate — they're

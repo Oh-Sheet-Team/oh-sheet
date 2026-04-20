@@ -206,8 +206,18 @@ def _maybe_swap_for_cover_sync(
         artist = None
     # Strip trailing parens like "(Official Video)", "(Piano Cover)",
     # "[Audio]" — they pollute the sheet music title but don't change
-    # what song it is.
-    title = re.sub(r"\s*[\(\[][^)\]]+[\)\]]\s*$", "", title).strip() or title
+    # what song it is. Loop until stable so stacked tags like
+    # "Song [Remastered] (Official Video) [4K]" get all three stripped;
+    # the anchored `$` regex only matches the rightmost bracket per
+    # pass, so a single re.sub call isn't enough.
+    while True:
+        stripped = re.sub(r"\s*[\(\[][^)\]]+[\)\]]\s*$", "", title).strip()
+        if not stripped or stripped == title:
+            # Either the title is now empty (don't over-strip — keep the
+            # last non-empty form as fallback) or no more brackets to
+            # remove. Exit the loop either way.
+            break
+        title = stripped
 
     try:
         match = find_clean_source(
