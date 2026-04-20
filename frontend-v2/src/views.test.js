@@ -256,26 +256,49 @@ describe("renderPhase — complete (with tunechat_job_id)", () => {
     expect(btn.getAttribute("aria-label")).toMatch(/fullscreen/i);
   });
 
-  it("fullscreen button calls requestFullscreen on the iframe", () => {
+  // Fullscreen tests capture+restore document.fullscreenElement so the
+  // mock doesn't leak into later suites. Also mocks exitFullscreen
+  // since happy-dom doesn't ship it by default.
+  let fsDescriptor;
+  beforeEach(() => {
+    fsDescriptor = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
+  });
+  afterEach(() => {
+    if (fsDescriptor) {
+      Object.defineProperty(document, "fullscreenElement", fsDescriptor);
+    } else {
+      delete document.fullscreenElement;
+    }
+    delete document.exitFullscreen;
+  });
+
+  it("fullscreen button calls requestFullscreen on the WRAPPER, not the iframe", () => {
+    // Target must be the .iframe-stub wrapper, not the iframe itself —
+    // requesting on the iframe would hide the button (the button is
+    // the iframe's sibling, not its child) making click-to-exit
+    // unreachable. See PR #89 review.
+    const wrap = container.querySelector(".iframe-stub.tunechat");
     const iframe = container.querySelector("iframe");
-    const spy = vi.fn().mockResolvedValue(undefined);
-    iframe.requestFullscreen = spy;
-    // No existing fullscreen element — click should enter fullscreen.
+    const wrapSpy = vi.fn().mockResolvedValue(undefined);
+    const iframeSpy = vi.fn().mockResolvedValue(undefined);
+    wrap.requestFullscreen = wrapSpy;
+    iframe.requestFullscreen = iframeSpy;
     Object.defineProperty(document, "fullscreenElement", {
       configurable: true,
       get: () => null,
     });
     container.querySelector(".fullscreen-btn").click();
-    expect(spy).toHaveBeenCalledTimes(1);
+    expect(wrapSpy).toHaveBeenCalledTimes(1);
+    expect(iframeSpy).not.toHaveBeenCalled();
   });
 
   it("fullscreen button calls exitFullscreen when already fullscreen", () => {
-    const iframe = container.querySelector("iframe");
+    const wrap = container.querySelector(".iframe-stub.tunechat");
     const exitSpy = vi.fn().mockResolvedValue(undefined);
     document.exitFullscreen = exitSpy;
     Object.defineProperty(document, "fullscreenElement", {
       configurable: true,
-      get: () => iframe,
+      get: () => wrap,
     });
     container.querySelector(".fullscreen-btn").click();
     expect(exitSpy).toHaveBeenCalledTimes(1);
