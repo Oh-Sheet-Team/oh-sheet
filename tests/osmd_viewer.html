@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>OSMD MusicXML Viewer</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 20px; }
+    #drop-zone {
+      border: 2px dashed #aaa; border-radius: 8px; padding: 40px;
+      text-align: center; color: #666; margin-bottom: 20px;
+      transition: border-color 0.2s;
+    }
+    #drop-zone.drag-over { border-color: #2196F3; background: #e3f2fd; }
+    #osmd-container { width: 100%; }
+    .error { color: red; font-weight: bold; }
+    .info { color: #666; font-size: 0.9em; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>OSMD MusicXML Viewer</h1>
+  <p>Mirrors the Flutter app's OSMD v1.8.9 config (SVG backend, <code>drawPartNames: true</code>).
+     Drop a <code>.musicxml</code> file or use the picker.</p>
+  <div id="drop-zone">
+    <p>Drag &amp; drop a .musicxml file here</p>
+    <input type="file" id="file-input" accept=".musicxml,.xml" />
+  </div>
+  <div id="status"></div>
+  <div id="osmd-container"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.9/build/opensheetmusicdisplay.min.js"></script>
+  <script>
+    var osmd = null;
+
+    function renderXml(xmlText) {
+      var status = document.getElementById("status");
+      var container = document.getElementById("osmd-container");
+      container.innerHTML = "";
+      status.textContent = "Rendering...";
+      status.className = "";
+
+      if (!osmd) {
+        osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(container, {
+          backend: "svg",
+          drawTitle: true,
+          drawSubtitle: false,
+          drawComposer: true,
+          drawCredits: false,
+          drawPartNames: true,
+          drawPartAbbreviations: false,
+          drawMeasureNumbers: true,
+          autoResize: true,
+          followCursor: false
+        });
+      }
+
+      osmd.load(xmlText).then(function () {
+        osmd.render();
+        status.textContent = "Rendered successfully.";
+        status.className = "info";
+      }).catch(function (err) {
+        status.textContent = "Render error: " + err.message;
+        status.className = "error";
+        console.error("[OSMD]", err);
+      });
+    }
+
+    function handleFile(file) {
+      var reader = new FileReader();
+      reader.onload = function (e) { renderXml(e.target.result); };
+      reader.readAsText(file);
+    }
+
+    document.getElementById("file-input").addEventListener("change", function (e) {
+      if (e.target.files.length) handleFile(e.target.files[0]);
+    });
+
+    var dropZone = document.getElementById("drop-zone");
+    dropZone.addEventListener("dragover", function (e) {
+      e.preventDefault();
+      dropZone.classList.add("drag-over");
+    });
+    dropZone.addEventListener("dragleave", function () {
+      dropZone.classList.remove("drag-over");
+    });
+    dropZone.addEventListener("drop", function (e) {
+      e.preventDefault();
+      dropZone.classList.remove("drag-over");
+      if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    });
+  </script>
+</body>
+</html>

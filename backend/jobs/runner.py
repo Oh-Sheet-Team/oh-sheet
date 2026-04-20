@@ -17,9 +17,11 @@ from urllib.parse import urlparse
 
 from celery import Celery
 
+from backend.config import settings
 from backend.contracts import (
     SCHEMA_VERSION,
     EngravedOutput,
+    EngravedScoreData,
     HarmonicAnalysis,
     InputBundle,
     InstrumentRole,
@@ -41,7 +43,9 @@ log = logging.getLogger(__name__)
 
 EventCallback = Callable[[JobEvent], None]
 
-# Maps execution plan step names to Celery task names.
+# Maps execution plan step names to Celery task names. The engrave stage
+# is NOT in this map — it's handled inline via the ml_engraver HTTP client
+# rather than dispatched as a Celery task.
 STEP_TO_TASK: dict[str, str] = {
     "ingest": "ingest.run",
     "transcribe": "transcribe.run",
@@ -49,7 +53,7 @@ STEP_TO_TASK: dict[str, str] = {
     "condense": "condense.run",
     "transform": "transform.run",
     "humanize": "humanize.run",
-    "engrave": "engrave.run",
+    "refine": "refine.run",
 }
 
 
@@ -257,13 +261,105 @@ class PipelineRunner:
                 job_id, step, i + 1, n,
             )
             t0 = time.perf_counter()
-            task_name = STEP_TO_TASK[step]
+            # engrave is handled inline (ML HTTP client) and has no
+            # STEP_TO_TASK entry; other stages still dispatch via Celery.
+            task_name = STEP_TO_TASK.get(step, "")
 
             try:
                 if step == "ingest":
                     payload_uri = self._serialize_stage_input(job_id, step, current_payload)
                     output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.stage_timeout_sec)
                     current_payload = self.blob_store.get_json(output_uri)
+
+                    # Update the display title/artist from the resolved
+                    # ingest metadata. The user submitted a YouTube URL as
+                    # the "title" — ingest probed the video and resolved
+                    # the real song name + artist. We update title/composer
+                    # so the result screen shows the song name, not the URL.
+                    ingest_meta = current_payload.get("metadata", {})
+                    resolved_title = ingest_meta.get("title")
+                    resolved_artist = ingest_meta.get("artist")
+                    # Keep the original URL for linking back to the source
+                    original_url = title if title.startswith("http") else None
+                    if resolved_title and resolved_title != title:
+                        title = resolved_title
+                    if resolved_artist and resolved_artist != composer:
+                        composer = resolved_artist
+                    # Update the bundle so the API returns the resolved
+                    # title instead of the raw YouTube URL.
+                    bundle = bundle.model_copy(update={
+                        "metadata": bundle.metadata.model_copy(update={
+                            "title": title,
+                            "artist": composer if composer != "Unknown" else bundle.metadata.artist,
+                            "source_url": original_url,
+                        }),
+                    })
+
+                    # For title_lookup jobs (YouTube URL / song title search),
+                    # delegate entirely to TuneChat when enabled. TuneChat
+                    # uses tcalgo + MuseScore which produces much cleaner
+                    # scores than Basic Pitch + music21. Skip the remaining
+                    # Oh Sheet pipeline stages and return TuneChat's result.
+                    if settings.tunechat_enabled:
+                        audio_data = current_payload.get("audio")
+                        is_title_job = bundle.metadata.source == "title_lookup"
+
+                        if is_title_job and audio_data and audio_data.get("uri"):
+                            # TuneChat-only path: send audio, await result,
+                            # return minimal EngravedOutput with TuneChat fields.
+                            try:
+                                from backend.services.tunechat_client import transcribe_via_tunechat
+                                audio_bytes = self.blob_store.get_bytes(audio_data["uri"])
+                                emit("ingest", "stage_completed", progress=0.25)
+                                emit("transcribe", "stage_started", progress=0.25)
+                                log.info("tunechat-only: sending audio for job_id=%s", job_id)
+                                tc_result = await transcribe_via_tunechat(
+                                    audio_bytes, "audio.wav",
+                                    title=title, artist=composer,
+                                )
+                                if tc_result is not None:
+                                    emit("transcribe", "stage_completed", progress=0.75)
+                                    emit("engrave", "stage_started", progress=0.75)
+                                    emit("engrave", "stage_completed", progress=1.0)
+                                    log.info(
+                                        "tunechat-only: success job_id=%s tc_job_id=%s",
+                                        job_id, tc_result.job_id,
+                                    )
+                                    return EngravedOutput(
+                                        metadata=EngravedScoreData(
+                                            includes_dynamics=False,
+                                            includes_pedal_marks=False,
+                                            includes_fingering=False,
+                                            includes_chord_symbols=False,
+                                            title=title,
+                                            composer=composer,
+                                        ),
+                                        pdf_uri=None,
+                                        musicxml_uri="",
+                                        humanized_midi_uri="",
+                                        tunechat_job_id=tc_result.job_id,
+                                        tunechat_preview_image_url=tc_result.preview_image_url,
+                                        # Capture the hosted artifact URLs so
+                                        # /v1/artifacts/{job}/{kind} can proxy
+                                        # downloads (see artifacts.py). Without
+                                        # these the download chips 404 on every
+                                        # TuneChat-fast-path job.
+                                        tunechat_midi_url=tc_result.midi_url,
+                                        tunechat_musicxml_url=tc_result.musicxml_url,
+                                        tunechat_pdf_url=tc_result.pdf_url,
+                                    )
+                                else:
+                                    log.warning("tunechat-only: returned None, falling back to Oh Sheet pipeline")
+                            # Silent-failure contract: any error (network,
+                            # SDK, blob read) drops us to the Oh Sheet
+                            # pipeline below. Never crash the job just
+                            # because the optional TuneChat path failed.
+                            except Exception as exc:  # noqa: BLE001
+                                log.warning("tunechat-only: failed (%s), falling back to Oh Sheet pipeline", exc)
+
+                        # Audio/MIDI uploads use Oh Sheet's own pipeline
+                        # (Basic Pitch + music21). TuneChat is not fired for
+                        # these routes — only for title_lookup jobs above.
 
                 elif step == "transcribe":
                     payload_uri = self._serialize_stage_input(job_id, step, current_payload)
@@ -303,28 +399,141 @@ class PipelineRunner:
                     output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.stage_timeout_sec)
                     perf_dict = self.blob_store.get_json(output_uri)
 
-                elif step == "engrave":
+                elif step == "refine":
                     if perf_dict is not None:
-                        engrave_envelope = {
+                        refine_envelope = {
                             "payload": perf_dict,
                             "payload_type": "HumanizedPerformance",
-                            "job_id": job_id,
-                            "title": title,
-                            "composer": composer,
+                            "title_hint": bundle.metadata.title,
+                            "artist_hint": bundle.metadata.artist,
+                            "filename_hint": bundle.metadata.source_filename,
                         }
                     elif score_dict is not None:
-                        engrave_envelope = {
+                        refine_envelope = {
                             "payload": score_dict,
                             "payload_type": "PianoScore",
-                            "job_id": job_id,
-                            "title": title,
-                            "composer": composer,
+                            "title_hint": bundle.metadata.title,
+                            "artist_hint": bundle.metadata.artist,
+                            "filename_hint": bundle.metadata.source_filename,
                         }
                     else:
-                        raise RuntimeError("engrave stage requires a score or performance — none was produced")
-                    payload_uri = self._serialize_stage_input(job_id, step, engrave_envelope)
+                        raise RuntimeError(
+                            "refine stage requires a score or performance — none was produced"
+                        )
+                    payload_uri = self._serialize_stage_input(job_id, step, refine_envelope)
                     output_uri = await self._dispatch_task(task_name, job_id, payload_uri, config.stage_timeout_sec)
-                    result_dict = self.blob_store.get_json(output_uri)
+                    refined = self.blob_store.get_json(output_uri)
+                    if refined["payload_type"] == "HumanizedPerformance":
+                        perf_dict = refined["payload"]
+                    else:
+                        score_dict = refined["payload"]
+
+                elif step == "engrave":
+                    # title_lookup jobs must resolve upstream (TuneChat) and
+                    # return before this stage runs. If control reaches here
+                    # with source=title_lookup, TuneChat was disabled or
+                    # failed — and there's no local fallback anymore, so we
+                    # hard-fail rather than silently producing a bad score.
+                    if bundle.metadata.source == "title_lookup":
+                        raise RuntimeError(
+                            "title_lookup job reached the engrave stage without "
+                            "a TuneChat result. Enable tunechat or submit the "
+                            "job as an audio/midi upload."
+                        )
+
+                    # Title/composer precedence: refined ScoreMetadata > InputMetadata > defaults.
+                    refined_md: dict | None = None
+                    if perf_dict is not None:
+                        refined_md = perf_dict.get("score", {}).get("metadata") if isinstance(perf_dict, dict) else None
+                    elif score_dict is not None:
+                        refined_md = score_dict.get("metadata") if isinstance(score_dict, dict) else None
+                    resolved_title = (refined_md or {}).get("title") or title
+                    resolved_composer = (refined_md or {}).get("composer") or composer
+
+                    from backend.contracts import (  # noqa: PLC0415
+                        ExpressionMap,
+                        ExpressiveNote,
+                        HumanizedPerformance,
+                        PianoScore,
+                    )
+                    from backend.services.midi_render import render_midi_bytes  # noqa: PLC0415
+                    from backend.services.ml_engraver_client import (  # noqa: PLC0415
+                        engrave_midi_via_ml_service,
+                    )
+
+                    if perf_dict is not None:
+                        perf_obj = HumanizedPerformance.model_validate(perf_dict)
+                    elif score_dict is not None:
+                        score_obj = PianoScore.model_validate(score_dict)
+                        expressive_notes = [
+                            ExpressiveNote(
+                                score_note_id=n.id,
+                                pitch=n.pitch,
+                                onset_beat=n.onset_beat,
+                                duration_beat=n.duration_beat,
+                                velocity=n.velocity,
+                                hand=hand_name,  # type: ignore[arg-type]
+                                voice=n.voice,
+                                timing_offset_ms=0.0,
+                                velocity_offset=0,
+                            )
+                            for hand_name, notes in (
+                                ("rh", score_obj.right_hand),
+                                ("lh", score_obj.left_hand),
+                            )
+                            for n in notes
+                        ]
+                        perf_obj = HumanizedPerformance(
+                            schema_version=SCHEMA_VERSION,
+                            expressive_notes=expressive_notes,
+                            expression=ExpressionMap(),
+                            score=score_obj,
+                            quality=QualitySignal(
+                                overall_confidence=0.5,
+                                warnings=["engrave-from-score"],
+                            ),
+                        )
+                    else:
+                        raise RuntimeError(
+                            "engrave stage requires a score or performance — none was produced"
+                        )
+
+                    # render_midi_bytes is synchronous (pretty_midi I/O);
+                    # keep the event loop free.
+                    midi_bytes = await asyncio.to_thread(render_midi_bytes, perf_obj)
+                    musicxml_bytes = await engrave_midi_via_ml_service(midi_bytes)
+
+                    prefix = f"jobs/{job_id}/output"
+                    musicxml_uri = self.blob_store.put_bytes(
+                        f"{prefix}/score.musicxml", musicxml_bytes,
+                    )
+                    midi_uri = self.blob_store.put_bytes(
+                        f"{prefix}/humanized.mid", midi_bytes,
+                    )
+
+                    result_dict = EngravedOutput(
+                        schema_version=SCHEMA_VERSION,
+                        metadata=EngravedScoreData(
+                            includes_dynamics=False,
+                            includes_pedal_marks=False,
+                            includes_fingering=False,
+                            includes_chord_symbols=False,
+                            title=resolved_title,
+                            composer=resolved_composer,
+                        ),
+                        pdf_uri=None,
+                        musicxml_uri=musicxml_uri,
+                        humanized_midi_uri=midi_uri,
+                        audio_preview_uri=None,
+                    ).model_dump(mode="json")
+                    log.info(
+                        "pipeline engrave via ML service job_id=%s source=%s "
+                        "musicxml_bytes=%d midi_bytes=%d",
+                        job_id,
+                        bundle.metadata.source,
+                        len(musicxml_bytes),
+                        len(midi_bytes),
+                    )
 
                 else:
                     raise RuntimeError(f"unknown stage in execution plan: {step!r}")

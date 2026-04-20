@@ -1,0 +1,20 @@
+{
+  "name": "oh-sheet-frontend-v2",
+  "version": "0.1.0",
+  "description": "Vanilla-JS SPA replacement for the Flutter frontend — 4-source submission (Audio/MIDI/Title/YouTube), card-morph state machine, inline OSMD or TuneChat iframe in result.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5175",
+    "build": "vite build",
+    "preview": "vite preview --port 5175",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@vitest/ui": "^2.1.0",
+    "happy-dom": "^15.11.0",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.0"
+  }
+}

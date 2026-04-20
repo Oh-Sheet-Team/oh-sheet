@@ -29,9 +29,44 @@ services:
     environment:
       OHSHEET_BLOB_ROOT: /app/blob
       OHSHEET_REDIS_URL: redis://redis:6379/0
+      # Pin the score pipeline explicitly so a default flip in
+      # backend/config.py can't silently change prod behavior. Only the
+      # orchestrator reads this (PipelineConfig is built at job-creation
+      # time in api/routes/jobs.py); workers just execute whatever stage
+      # they're dispatched. Remove after validating condense_only in prod.
+      OHSHEET_SCORE_PIPELINE: arrange
+      # TuneChat external transcription. The ingest stage POSTs audio to
+      # TuneChat in parallel with Oh Sheet's own pipeline. Orchestrator
+      # needs these because api/routes/jobs.py reads settings.tunechat_*
+      # when building PipelineConfig at job-creation time. Enabled flag
+      # is the kill switch — unset or set to "false" to short-circuit.
+      OHSHEET_TUNECHAT_ENABLED: ${OHSHEET_TUNECHAT_ENABLED:-false}
+      OHSHEET_TUNECHAT_URL: ${OHSHEET_TUNECHAT_URL:-}
+      OHSHEET_TUNECHAT_API_KEY: ${OHSHEET_TUNECHAT_API_KEY:-}
+      # Client-side timeout for the httpx POST to TuneChat. 300 s default
+      # is short for 10+ min tracks — tuned higher on qa/prod via the
+      # deploy.yml → .env pipeline. Default falls through to
+      # backend/config.py's 300 s if the env var is unset.
+      OHSHEET_TUNECHAT_TIMEOUT_SEC: ${OHSHEET_TUNECHAT_TIMEOUT_SEC:-300}
+      # Engraver service URL — backend.jobs.runner (living in this container)
+      # always routes audio/midi engrave jobs to this URL. No local fallback.
+      # REQUIRED: ``${VAR:?msg}`` makes docker compose refuse to start when
+      # the variable is unset or empty so a missing deploy-var can't silently
+      # route every prod engrave to localhost:8080 and black-hole the job.
+      OHSHEET_ENGRAVER_SERVICE_URL: ${OHSHEET_ENGRAVER_SERVICE_URL:?OHSHEET_ENGRAVER_SERVICE_URL must be set (no fallback engraver in prod)}
+      # YouTube bot-detection bypass. deploy.yml writes the
+      # OHSHEET_YTDLP_COOKIES secret to ~/oh-sheet/youtube-cookies.txt
+      # on the VM; this path is where the mounted file lands inside the
+      # container. services/_ytdlp_utils.py checks file size > 0 before
+      # using it, so an unset/empty secret is a safe no-op.
+      OHSHEET_YTDLP_COOKIES_PATH: /app/youtube-cookies.txt
       COMMIT_SHA: ${COMMIT_SHA:-unknown}
     volumes:
       - blob-data:/app/blob
+      # Bind-mount the cookies file read-only. Source file must exist on
+      # the VM before ``docker compose up`` — deploy.yml creates it (or
+      # empty file if secret unset) so this mount never fails.
+      - ./youtube-cookies.txt:/app/youtube-cookies.txt:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -49,8 +84,26 @@ services:
     environment:
       OHSHEET_BLOB_ROOT: /app/blob
       OHSHEET_REDIS_URL: redis://redis:6379/0
+      # TuneChat is called from services/ingest.py via the tunechat_client
+      # (async httpx.AsyncClient.post) — see config comment on
+      # tunechat_timeout_sec. Worker must have the env vars or the call
+      # short-circuits to None and Oh Sheet uses its own pipeline only.
+      OHSHEET_TUNECHAT_ENABLED: ${OHSHEET_TUNECHAT_ENABLED:-false}
+      OHSHEET_TUNECHAT_URL: ${OHSHEET_TUNECHAT_URL:-}
+      OHSHEET_TUNECHAT_API_KEY: ${OHSHEET_TUNECHAT_API_KEY:-}
+      # Client-side timeout for the httpx POST to TuneChat. 300 s default
+      # is short for 10+ min tracks — tuned higher on qa/prod via the
+      # deploy.yml → .env pipeline. Default falls through to
+      # backend/config.py's 300 s if the env var is unset.
+      OHSHEET_TUNECHAT_TIMEOUT_SEC: ${OHSHEET_TUNECHAT_TIMEOUT_SEC:-300}
+      # YouTube bot-detection bypass — worker-ingest is where the actual
+      # yt-dlp download happens (services/ingest.py::_download_youtube_sync).
+      # Same bind-mount as orchestrator for cover_search probes that also
+      # hit yt-dlp (_yt_dlp_search + _yt_dlp_extract_info).
+      OHSHEET_YTDLP_COOKIES_PATH: /app/youtube-cookies.txt
     volumes:
       - blob-data:/app/blob
+      - ./youtube-cookies.txt:/app/youtube-cookies.txt:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -118,18 +171,23 @@ services:
       redis:
         condition: service_healthy
 
-  worker-engrave:
+  worker-refine:
     image: ${IMAGE}
-    command: celery -A backend.workers.celery_app worker -Q engrave -c 1 --loglevel=warning
+    command: celery -A backend.workers.celery_app worker -Q refine -c 1 --loglevel=warning
     restart: unless-stopped
     environment:
       OHSHEET_BLOB_ROOT: /app/blob
       OHSHEET_REDIS_URL: redis://redis:6379/0
+      OHSHEET_ANTHROPIC_API_KEY: ${OHSHEET_ANTHROPIC_API_KEY:-}
     volumes:
       - blob-data:/app/blob
     depends_on:
       redis:
         condition: service_healthy
+
+  # worker-engrave has been retired. The engrave stage now runs inline in
+  # the orchestrator as an HTTP call to oh-sheet-ml-pipeline (see
+  # OHSHEET_ENGRAVER_SERVICE_URL on the orchestrator service).
 
   caddy:
     image: caddy:2-alpine

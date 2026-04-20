@@ -25,6 +25,7 @@ from shared.contracts import (
     RealtimeChordEvent,
     RemoteAudioFile,
     RemoteMidiFile,
+    Repeat,
     ScoreChordEvent,
     ScoreMetadata,
     ScoreNote,

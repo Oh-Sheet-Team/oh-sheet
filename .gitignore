@@ -23,8 +23,11 @@ blob/
 !.openskills/skill-log-architectural-decisions/**
 LINEAR_TICKETS.md
 STUDY_GUIDE.md
+ROADMAP.md
 PRD.md
 coverage.xml
+# Extracted MusicXML debug artifacts (regenerable via tests/extract_musicxml.py)
+tests/fixtures/scores/*.musicxml
 node_modules/
 .openskills/skill-log-architectural-decisions/SKILL.md
 e2e/test-results/.last-run.json
@@ -33,3 +36,6 @@ e2e/playwright-report/index.html
 dump.rdb
 .claude/worktrees/
 eval-results*.json
+
+# YouTube cookies file written by deploy.yml (see docs/ytdlp-cookies.md)
+youtube-cookies.txt

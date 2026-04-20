@@ -96,6 +96,11 @@ PIANO_EASY_CHANNELS: tuple[str, ...] = (
     "onepianoheart",
     "easy piano tutorials",
     "simple piano",
+    "atlantic notes",
+    "tutorialsbyhugo",
+    "bitesize piano",
+    "rainbow piano tuto",
+    "pianotutorialeasy",    # @PianoTutorialEasy — added 2026-04-18 (demo audit)
 )
 
 # Tier 2 — moderate / intermediate arrangements. Playable for a
@@ -118,6 +123,30 @@ PIANO_MODERATE_CHANNELS: tuple[str, ...] = (
     # substring matching (risks false positives against the pop artist
     # Kesha), so we match on the unambiguous uploader_id handle.
     "keshpianomusic",
+    # Added from the 8-song audit (2026-04-11): channels that produced
+    # good matches but were missing from the allowlist, scoring only
+    # on title/artist/keyword without the +50 bonus.
+    "yifanmusic",
+    # "sheet music boss",  # removed: duet arrangements break music21 engrave
+    "jova musique",         # also publishes as "Pianella Piano"
+    "kassia",
+    "piano by number",
+    "learn piano live",
+    "the theorist",
+    "littletranscriber",
+    "riyandi kusuma",
+    "naor yadid",
+    "katherine cordova",
+    "costantino carrara",
+    "we artplay",
+    "ya boi carter",
+    "akiva broder",
+    "cleminova",
+    "pollonuel",
+    "matty on the keys",
+    "flying fingers",
+    "piano covers - topic",
+    "pbossonn",             # @pbossonn — added by product owner request
 )
 
 # Tier 3 — virtuoso / concert-level arrangements. Defined here for
@@ -134,14 +163,19 @@ PIANO_ADVANCED_CHANNELS: tuple[str, ...] = (
     "david solís",
     "david solis",          # ASCII fallback
     "the piano guys",
+    "peter bence",          # added 2026-04-18 (Beat It audit: high-quality
+                            # arrangements, ~3M subs, was scoring 50 without bonus)
 )
 
-# Active piano allowlist = easy + moderate. Advanced is defined above
-# but not included. This is the list the scorer checks for the +50
-# channel bonus. Easy channels get an additional +10 bias via
-# _EASY_TIER_BONUS below.
+# Active piano allowlist = easy + moderate + advanced. All three tiers
+# receive the +50 channel bonus. Easy channels get an additional +10
+# bias via _EASY_TIER_BONUS below. Advanced channels (Rousseau, Kyle
+# Landry, etc.) produce complex transcriptions that may be hard for
+# beginners, but a complex cover transcribed accurately is dramatically
+# better than no cover at all — the Spread Thin A/B test (2026-04-11)
+# proved this conclusively.
 COVER_CHANNEL_ALLOWLIST: tuple[str, ...] = (
-    PIANO_EASY_CHANNELS + PIANO_MODERATE_CHANNELS
+    PIANO_EASY_CHANNELS + PIANO_MODERATE_CHANNELS + PIANO_ADVANCED_CHANNELS
 )
 
 
@@ -208,9 +242,17 @@ CHIPTUNE_CHANNEL_ALLOWLIST: tuple[str, ...] = (
 # more-specific patterns first so they don't get accidentally matched by
 # a generic one.
 _NOISE_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # "(Official Music Video)", "[Official Video]", " - Official Video"
-    re.compile(r"\s*[\[\(]\s*official\s+(music\s+)?video\s*[\]\)]", re.IGNORECASE),
-    re.compile(r"\s*-\s*official\s+(music\s+)?video", re.IGNORECASE),
+    # Catch-all for "[Official ...]" and "(Official ...)" — covers video,
+    # visualizer, audio, lyric video, and any future YouTube label variants.
+    re.compile(r"\s*[\[\(]\s*official\s+[^\]\)]*[\]\)]", re.IGNORECASE),
+    # Dash-prefixed variants like "- Official Music Video". Enumerate the
+    # known suffixes instead of `\w+(\s+\w+)?` — the open-ended version
+    # would also eat legitimate trailing text ("- Official release
+    # announcement") and strip meaningful words from the title.
+    re.compile(
+        r"\s*-\s*official\s+(music\s+video|lyric\s+video|video|audio|visualizer|mv)\b",
+        re.IGNORECASE,
+    ),
     # "(Lyrics)", "[Lyric Video]"
     re.compile(r"\s*[\[\(]\s*lyrics?\s*(video)?\s*[\]\)]", re.IGNORECASE),
     # "(HD)", "[4K Remaster]", "(Remastered 2020)"
@@ -251,6 +293,8 @@ _PIANO_COVER_KEYWORDS: tuple[str, ...] = (
     "piano cover",
     "piano arrangement",
     "solo piano",
+    "piano tutorial",
+    "piano version",
 )
 
 # Positive-signal keywords for chiptune/8-bit covers. "8 bit" is the most
@@ -265,14 +309,20 @@ _CHIPTUNE_KEYWORDS: tuple[str, ...] = (
     "8bit",
 )
 
-# Negative-signal keywords that indicate "this is NOT what we want."
-# Shared across all variants — karaoke and tutorials are noise no matter
-# what source we're looking for.
+# Negative-signal keywords. Karaoke tracks have backing vocals and no
+# piano — always bad. Tutorial/lesson penalty removed (2026-04-12):
+# too many clean Synthesia-style piano tutorials were being rejected
+# (Omar Blyde, Piano and Sing, Top Piano Tutorials, etc). The positive
+# keyword "piano tutorial" now gives +30 instead.
 _BAD_KEYWORDS: tuple[str, ...] = (
     "karaoke",
-    "tutorial",
-    "how to play",
-    "lesson",
+)
+
+# Channels whose arrangements consistently break music21's MusicXML
+# export (duet layouts, complex subdivisions). Any candidate from these
+# channels is filtered out entirely before scoring.
+_BLOCKED_CHANNELS: tuple[str, ...] = (
+    "sheet music boss",
 )
 
 # Additional bonus for piano channels in the "easy" tier on top of the
@@ -323,7 +373,14 @@ CHIPTUNE_VARIANT = _SourceVariant(
 # Default variant set used by ``find_clean_source``. Order matters only
 # for logging — the scorer always picks the globally highest across all
 # variants, regardless of list position.
-DEFAULT_VARIANTS: tuple[_SourceVariant, ...] = (PIANO_VARIANT, CHIPTUNE_VARIANT)
+# Chiptune variant is paused: the downstream transcription pipeline is
+# trained for piano only. Chiptune results that win the cross-variant
+# comparison become dead ends — they fall back to the basic pipeline
+# with no enhanced output. Worse, chiptune can beat piano on score
+# (e.g. Flashing Lights: chiptune 90 > piano 80), stealing a song
+# that WOULD route to the enhanced pipeline. Reactivate post-demo if
+# a chiptune-capable transcription path is added.
+DEFAULT_VARIANTS: tuple[_SourceVariant, ...] = (PIANO_VARIANT,)
 
 
 def score_candidate_for_variant(
@@ -347,6 +404,17 @@ def score_candidate_for_variant(
     uploader_id_norm = (entry.get("uploader_id") or "").lower().lstrip("@")
     wanted_title_norm = normalize_title(wanted_title)
     wanted_artist_norm = (wanted_artist or "").lower().strip()
+
+    # Blocked channels are filtered out entirely — return -1 so they
+    # never pass the min_score threshold.
+    if any(b in channel_norm or b in uploader_id_norm for b in _BLOCKED_CHANNELS):
+        return -1
+
+    # Skip videos shorter than 60 seconds — these are snippets/shorts,
+    # not full covers. Produces thin, incomplete transcriptions.
+    duration = entry.get("duration") or 0
+    if duration and duration < 60:
+        return -1
 
     # Helper: does any allowlist entry match either the channel name
     # OR the uploader_id handle? Checking both fields lets us pin
@@ -392,12 +460,20 @@ def score_candidate_for_variant(
         score += 10
 
     # -20 for any bad keyword — karaoke, tutorials, and lessons are not
-    # cover recordings and will confuse Basic Pitch worse than the mix.
-    # EXEMPTION: channels on TRUSTED_TUTORIAL_CHANNELS bypass the
-    # penalty because their "tutorial" videos are actually clean
-    # synthesized-piano audio suitable for transcription (e.g. Kesh).
+    # cover recordings and will confuse the transcriber worse than the
+    # original mix.
+    #
+    # EXEMPTION: any channel in the variant's allowlist OR in the
+    # TRUSTED_TUTORIAL_CHANNELS list bypasses the penalty. The reasoning:
+    # if a channel is good enough to be on the allowlist, their "tutorial"
+    # videos produce clean transcription-quality audio (Synthesia-style
+    # rendered piano, no voiceover). The penalty exists for UNKNOWN
+    # tutorial uploaders — channels we've never vetted and whose
+    # "tutorial" videos might have talking, slowdowns, metronome clicks.
+    is_allowlisted = _matches_any(variant.channel_allowlist)
     is_trusted_tutorial = _matches_any(TRUSTED_TUTORIAL_CHANNELS)
-    if not is_trusted_tutorial and any(bad in title_norm for bad in _BAD_KEYWORDS):
+    is_exempt = is_allowlisted or is_trusted_tutorial
+    if not is_exempt and any(bad in title_norm for bad in _BAD_KEYWORDS):
         score -= 20
 
     return score
@@ -487,7 +563,7 @@ def find_clean_source(
     artist: str | None,
     *,
     min_score: int = 60,
-    top_k: int = 5,
+    top_k: int = 10,
     variants: tuple[_SourceVariant, ...] = DEFAULT_VARIANTS,
 ) -> CoverSearchResult | None:
     """Search every variant for a clean alternative source of the song,
@@ -545,7 +621,7 @@ def find_piano_cover(
     artist: str | None,
     *,
     min_score: int = 60,
-    top_k: int = 5,
+    top_k: int = 10,
 ) -> CoverSearchResult | None:
     """Piano-only search — thin backward-compat wrapper around
     ``find_clean_source``.
@@ -611,8 +687,16 @@ def _yt_dlp_search(query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
     Metadata only; does not download any video. This is the single
     boundary where network I/O happens, so tests mock this function.
     """
-    import yt_dlp  # local import so tests can patch _yt_dlp_search without
-                   # forcing yt-dlp into the test environment.
+    # Local imports so tests can patch _yt_dlp_search without forcing
+    # yt-dlp into the test environment. apply_ytdlp_cookies is imported
+    # locally (not at module top) to stay consistent with that pattern —
+    # if yt-dlp isn't installed, this function isn't called, so its
+    # dependencies shouldn't be required at import time either. Contrast
+    # with ingest.py, which imports apply_ytdlp_cookies at top-level
+    # because yt-dlp is always required there.
+    import yt_dlp
+
+    from backend.services._ytdlp_utils import apply_ytdlp_cookies
 
     ydl_opts = {
         "default_search": f"ytsearch{top_k}",
@@ -622,6 +706,7 @@ def _yt_dlp_search(query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
         "extract_flat": True,  # metadata only, don't resolve each result
         "socket_timeout": 15,
     }
+    apply_ytdlp_cookies(ydl_opts)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         result = ydl.extract_info(f"ytsearch{top_k}:{query}", download=False)
@@ -694,7 +779,10 @@ def _yt_dlp_extract_info(url: str) -> dict[str, Any] | None:
     flags as ``_yt_dlp_search`` but targets a single URL instead of a
     search query.
     """
-    import yt_dlp  # local import — keeps yt-dlp out of the test import path
+    # Local imports — keeps yt-dlp out of the test import path.
+    import yt_dlp
+
+    from backend.services._ytdlp_utils import apply_ytdlp_cookies
 
     ydl_opts = {
         "quiet": True,
@@ -702,6 +790,7 @@ def _yt_dlp_extract_info(url: str) -> dict[str, Any] | None:
         "skip_download": True,
         "socket_timeout": 15,
     }
+    apply_ytdlp_cookies(ydl_opts)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)

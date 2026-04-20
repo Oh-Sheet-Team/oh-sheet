@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from backend.contracts import ScorePipelineMode
@@ -485,6 +485,31 @@ class Settings(BaseSettings):
     cover_search_enabled: bool = True
     cover_search_min_score: int = 60
 
+    # ---- Refine stage (LLM-driven score annotation) -------------------------
+    # The refine stage uses Anthropic Claude + the built-in web_search tool to
+    # produce human-readable score metadata (title, composer, key, tempo
+    # marking, section structure, repeats). See backend/services/refine.py.
+    # refine_enabled is derived: True when anthropic_api_key is set.
+    # Set OHSHEET_REFINE_ENABLED=false to force-disable even with a key.
+    refine_enabled: bool | None = None        # None = auto (key present → on)
+    refine_model: str = "claude-sonnet-4-6"
+    refine_max_searches: int = 5              # web_search cap per refinement
+    refine_budget_sec: int = 300              # overall wall-time budget
+    refine_call_timeout_sec: int = 120        # per-API-call timeout
+    anthropic_api_key: str | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def refine_active(self) -> bool:
+        """Whether the refine stage actually runs.
+
+        Auto-derives from key presence unless explicitly overridden via
+        OHSHEET_REFINE_ENABLED.
+        """
+        if self.refine_enabled is not None:
+            return self.refine_enabled
+        return self.anthropic_api_key is not None
+
     @field_validator(
         "cleanup_energy_gate_floor_ratio",
         "cleanup_octave_amp_ratio",
@@ -525,8 +550,85 @@ class Settings(BaseSettings):
         return v
 
     # Score path after transcription (or MIDI-derived TranscriptionResult).
-    # Env: ``OHSHEET_SCORE_PIPELINE`` — ``arrange`` (default) or ``condense_transform``.
-    score_pipeline: ScorePipelineMode = "arrange"
+    # Env: ``OHSHEET_SCORE_PIPELINE`` — ``arrange`` or ``condense_only`` (default).
+    # condense_only splits arrangement into two stages: condense
+    # (flatten all tracks into one piano stream) then transform (apply
+    # difficulty shaping). Produces a denser, more complete MIDI than
+    # the single-pass arrange mode.
+    #
+    # ``condense_transform`` is accepted as a deprecated alias of
+    # ``condense_only`` for one release — deployed environments may
+    # still carry the old value in their .env.
+    score_pipeline: ScorePipelineMode = "condense_only"
+
+    @field_validator("score_pipeline", mode="before")
+    @classmethod
+    def _alias_condense_transform(cls, v: object) -> object:
+        if v == "condense_transform":
+            import warnings
+            warnings.warn(
+                "OHSHEET_SCORE_PIPELINE='condense_transform' is deprecated; "
+                "use 'condense_only'. Support will be removed in the next release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return "condense_only"
+        return v
+
+    # ── TuneChat integration ──────────────────────────────────────────
+    # When enabled, Oh Sheet sends audio to TuneChat's transcription
+    # API in parallel with its own pipeline. TuneChat returns a
+    # higher-quality 30-second preview (sheet music + MIDI). Oh Sheet
+    # shows its own result immediately, then upgrades to TuneChat's
+    # result when it arrives.
+    #
+    # Env: OHSHEET_TUNECHAT_ENABLED (default: false — opt-in)
+    # Env: OHSHEET_TUNECHAT_URL (the base URL of a running TuneChat)
+    # Env: OHSHEET_TUNECHAT_API_KEY (Bearer token for /api/v1/transcribe)
+    # Env: OHSHEET_TUNECHAT_TIMEOUT_SEC (max wait before giving up)
+    #
+    # Note: ``tunechat_timeout_sec`` is the synchronous upper bound for
+    # ``httpx.AsyncClient.post`` inside the ingest stage. Because the
+    # runner ``await``s the response before returning, the Celery worker
+    # handling the job is pinned for up to this duration (5 min default).
+    # Size worker concurrency accordingly when TuneChat is enabled.
+    tunechat_enabled: bool = False
+    tunechat_url: str = "http://localhost:3000"
+    tunechat_api_key: str = ""
+    tunechat_timeout_sec: int = 300
+
+    # ---- ML engraver service ----------------------------------------------
+    # audio_upload and midi_upload jobs always route their engraving through
+    # the oh-sheet-ml-pipeline HTTP service (POST {url}/engrave, MIDI bytes →
+    # MusicXML bytes). There is no local fallback — an outage here fails the
+    # job. title_lookup jobs are expected to resolve upstream via TuneChat;
+    # if they reach the engrave stage, the job hard-fails with a clear error.
+    #
+    # Env: OHSHEET_ENGRAVER_SERVICE_URL, OHSHEET_ENGRAVER_SERVICE_TIMEOUT_SEC
+    engraver_service_url: str = "http://localhost:8080"
+    engraver_service_timeout_sec: int = 60
+
+    # ── YouTube bot-detection bypass (yt-dlp cookies) ─────────────────
+    # YouTube periodically flags known data-center IPs (GCP, AWS, etc.)
+    # as bot traffic and demands a signed-in session. When that happens,
+    # ingest + cover_search users see "Sign in to confirm you're not a
+    # bot" from yt-dlp and the job fails before it reaches transcription.
+    #
+    # Setting this to a path of a Netscape-format cookies.txt file (from
+    # a logged-in browser session) routes yt-dlp's requests through that
+    # session and bypasses the bot check. Leave empty to run anonymously
+    # — works until YouTube rate-limits the VM.
+    #
+    # Deploy story: the deploy.yml writes the OHSHEET_YTDLP_COOKIES
+    # GitHub secret to ~/oh-sheet/youtube-cookies.txt on the VM, and
+    # docker-compose bind-mounts that file at /app/youtube-cookies.txt
+    # inside the orchestrator + worker-ingest containers. Services
+    # check file size > 0 before using the path, so an unset/empty
+    # secret is a safe no-op.
+    #
+    # Env: OHSHEET_YTDLP_COOKIES_PATH
+    # Refresh: see docs/ytdlp-cookies.md for browser-export instructions
+    ytdlp_cookies_path: str | None = None
 
     # ---- Arrange backend (rules vs HF MIDI path) ---------------------------
     # ``rules`` — existing hand assignment + quantization in arrange.

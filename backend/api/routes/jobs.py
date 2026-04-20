@@ -63,6 +63,7 @@ class JobSummary(BaseModel):
     variant: str
     title: str | None = None
     artist: str | None = None
+    source_url: str | None = None
     error: str | None = None
     result: EngravedOutput | None = None
 
@@ -74,6 +75,7 @@ def _record_to_summary(record: JobRecord) -> JobSummary:
         variant=record.config.variant,
         title=record.bundle.metadata.title,
         artist=record.bundle.metadata.artist,
+        source_url=record.bundle.metadata.source_url,
         error=record.error,
         result=record.result,
     )
@@ -97,6 +99,25 @@ async def create_job(
             detail="Provide one of: audio, midi, or title (for title-lookup).",
         )
 
+    # title_lookup jobs resolve through TuneChat upstream — they never
+    # reach the ML engraver. When TuneChat is disabled there's no path
+    # that can produce a score for these jobs, so reject at creation
+    # time rather than burning ~1 minute of ingest/transcribe/arrange/
+    # humanize only to hard-fail at engrave.
+    # Explicit title check (not just "neither audio nor midi") so a
+    # future source type doesn't silently classify as title_lookup.
+    is_title_lookup = (
+        body.audio is None and body.midi is None and body.title is not None
+    )
+    if is_title_lookup and not settings.tunechat_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "title-lookup jobs require TuneChat, which is currently disabled. "
+                "Upload the audio or MIDI file directly."
+            ),
+        )
+
     # Integrity: the audio / midi URI must point to a real blob in
     # storage. Without this check a client could forge a Remote*File
     # with an arbitrary URI and the pipeline would "succeed" by
@@ -116,9 +137,15 @@ async def create_job(
     # Build InputMetadata once — prefer_clean_source is threaded through
     # every variant so uploads can theoretically opt in too (the ingest
     # stage just ignores it when audio is already present).
+    source_filename = None
+    if body.audio is not None:
+        source_filename = body.audio.source_filename
+    elif body.midi is not None:
+        source_filename = body.midi.source_filename
     metadata_kwargs = {
         "title": body.title,
         "artist": body.artist,
+        "source_filename": source_filename,
         "prefer_clean_source": body.prefer_clean_source,
     }
 
@@ -151,6 +178,7 @@ async def create_job(
     config = PipelineConfig(
         variant=variant,
         skip_humanizer=body.skip_humanizer,
+        enable_refine=settings.refine_active,
         score_pipeline=settings.score_pipeline,
     )
     record = await manager.submit(bundle, config)

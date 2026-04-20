@@ -22,6 +22,7 @@ celery_app.conf.update(
         "condense.run": {"queue": "arrange"},
         "transform.run": {"queue": "arrange"},
         "humanize.run": {"queue": "humanize"},
+        "refine.run": {"queue": "refine"},
         "engrave.run": {"queue": "engrave"},
     },
 )

@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "3.0.0"
+SCHEMA_VERSION = "3.1.0"
 
 
 # ---------------------------------------------------------------------------
@@ -46,12 +46,14 @@ class RemoteAudioFile(BaseModel):
     duration_sec: float
     channels: int
     content_hash: str | None = None
+    source_filename: str | None = None
 
 
 class RemoteMidiFile(BaseModel):
     uri: str
     ticks_per_beat: int
     content_hash: str | None = None
+    source_filename: str | None = None
 
 
 class SectionLabel(str, Enum):
@@ -129,12 +131,16 @@ class InputMetadata(BaseModel):
     title: str | None = None
     artist: str | None = None
     source: Literal["title_lookup", "audio_upload", "midi_upload"]
+    source_filename: str | None = None
     # When True, the ingest stage will attempt to find a clean piano
     # cover of the song (via yt-dlp search + scoring) and swap the
     # user's URL for the cover's URL before transcription. See
     # backend/services/cover_search.py for the matching logic.
     # Defaults to False so existing callers and fixtures keep working.
     prefer_clean_source: bool = False
+    # Original YouTube URL the user submitted (preserved after
+    # title is replaced with the resolved song name by ingest).
+    source_url: str | None = None
 
 
 class InputBundle(BaseModel):
@@ -219,11 +225,26 @@ class ScoreChordEvent(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
+class Repeat(BaseModel):
+    """Repeat bracket in the score.
+
+    ``simple`` — a plain ``|: ... :|`` repeat with no volta brackets.
+    ``with_endings`` — a repeated section with 1st/2nd-ending brackets.
+    Populated by the refine stage; consumed by engrave.
+    """
+    start_beat: float
+    end_beat: float
+    kind: Literal["simple", "with_endings"]
+
+
 class ScoreSection(BaseModel):
     start_beat: float
     end_beat: float
     label: SectionLabel
     phrase_boundaries: list[float] = Field(default_factory=list)
+    # Free-form label set by refine stage. Falls back to ``label`` when
+    # absent. Engrave renders whichever is present.
+    custom_label: str | None = None
 
 
 class ScoreMetadata(BaseModel):
@@ -233,6 +254,15 @@ class ScoreMetadata(BaseModel):
     difficulty: Difficulty
     sections: list[ScoreSection] = Field(default_factory=list)
     chord_symbols: list[ScoreChordEvent] = Field(default_factory=list)
+    # Populated by the refine stage. All optional so upstream producers
+    # that don't know about refine can still build valid ScoreMetadata.
+    title: str | None = None
+    composer: str | None = None
+    arranger: str | None = None
+    tempo_marking: str | None = None        # e.g., "Andante"
+    # MIDI pitch where the left/right hand split — engrave's default is ~60.
+    staff_split_hint: int | None = Field(default=None, ge=0, le=127)
+    repeats: list[Repeat] = Field(default_factory=list)
 
 
 class PianoScore(BaseModel):
@@ -318,11 +348,33 @@ class EngravedScoreData(BaseModel):
 class EngravedOutput(BaseModel):
     schema_version: str = SCHEMA_VERSION
     metadata: EngravedScoreData
-    pdf_uri: str
+    # Nullable: the ML engraver returns MusicXML only, so pdf_uri is
+    # ``None`` for the audio/midi-upload path. Legacy consumers that
+    # expected an always-present string should now check for ``None``.
+    # No SCHEMA_VERSION bump — this branch hasn't shipped and no
+    # persisted EngravedOutput blobs depend on the old ``str`` shape.
+    pdf_uri: str | None = None
     musicxml_uri: str
     humanized_midi_uri: str
     audio_preview_uri: str | None = None
     transcription_midi_uri: str | None = None
+
+    # TuneChat integration — populated when tunechat_enabled=True and
+    # TuneChat responded successfully. job_id powers the "Open in
+    # TuneChat" deep link. preview_image_url is a first-page PNG of
+    # TuneChat's rendered score for display in Oh Sheet's result screen.
+    tunechat_job_id: str | None = None
+    tunechat_preview_image_url: str | None = None
+    # Artifact URLs hosted on TuneChat's server. When Oh Sheet's
+    # pipeline skipped local engraving (TuneChat-only path), these
+    # are the only place the rendered artifacts exist. The artifacts
+    # endpoint (backend/api/routes/artifacts.py) proxies downloads
+    # through these when ``pdf_uri`` / ``musicxml_uri`` / ``humanized_midi_uri``
+    # are empty, so /v1/artifacts/{job}/{kind} keeps working
+    # regardless of which engraver produced the files.
+    tunechat_midi_url: str | None = None
+    tunechat_musicxml_url: str | None = None
+    tunechat_pdf_url: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -333,14 +385,15 @@ PipelineVariant = Literal["full", "audio_upload", "midi_upload", "sheet_only"]
 
 # How seconds-domain transcription becomes a beat-domain PianoScore.
 # ``arrange`` — hand assignment, dedup, quantization (default).
-# ``condense_transform`` — merge all tracks into one piano stream (condense) then
+# ``condense_only`` — merge all tracks into one piano stream (condense) then
 # transform (passthrough for now).
-ScorePipelineMode = Literal["arrange", "condense_transform"]
+ScorePipelineMode = Literal["arrange", "condense_only"]
 
 
 class PipelineConfig(BaseModel):
     variant: PipelineVariant
     skip_humanizer: bool = False
+    enable_refine: bool = True
     stage_timeout_sec: int = 600
     score_pipeline: ScorePipelineMode = "arrange"
 
@@ -355,11 +408,15 @@ class PipelineConfig(BaseModel):
         plan = list(routing[self.variant])
         if self.skip_humanizer and "humanize" in plan:
             plan.remove("humanize")
-        if self.score_pipeline == "condense_transform":
+        if self.score_pipeline == "condense_only":
             try:
                 idx = plan.index("arrange")
             except ValueError:
                 pass
             else:
-                plan[idx : idx + 1] = ["condense", "transform"]
+                # Replace arrange with just condense (transform is a
+                # no-op stub, so skip it to save pipeline time).
+                plan[idx : idx + 1] = ["condense"]
+        if self.enable_refine and "engrave" in plan:
+            plan.insert(plan.index("engrave"), "refine")
         return plan
