@@ -102,10 +102,12 @@ eval = [
     # for that. Already a transitive dep of basic-pitch via librosa, so
     # listing it explicitly here just pins the import surface.
     "cryptography>=42",
+    # librosa for chroma_cqt / chroma cosine in tier_rf, tier4, tier2.
+    # Pulls in soundfile, numpy, scipy as transitive deps.
+    "librosa>=0.10",
     # soundfile (libsndfile bindings) for the FluidSynth resynth path in
-    # eval/tier_rf.py and the Kong inference helper. Transitive dep of
-    # librosa but pinned here so the eval extras don't need [basic-pitch]
-    # just to read a WAV.
+    # eval/tier_rf.py and the Kong inference helper. Already transitive
+    # via librosa but pinned explicitly so the import surface is stable.
     "soundfile>=0.12",
 ]
 # Demucs source separation, used by TranscribeService when
