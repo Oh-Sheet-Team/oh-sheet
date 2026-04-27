@@ -25,7 +25,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from backend.contracts import (
     ExpressionMap,
@@ -372,7 +372,7 @@ def _build_part_flat(
     m21_clef,
     m21_modules: dict,
     features: EngravedFeatures,
-) -> tuple[object, set[int]]:
+) -> tuple[Any, set[int]]:
     """Build a single staff (Part) populated with notes, clef, key, time sig.
 
     The returned Part is *flat* — notes live directly in Voice containers
@@ -562,7 +562,7 @@ def _attach_articulations(
 
     # Build an index over the part's notes keyed by score_note_id (which
     # we tagged into note.editorial.misc when constructing the part).
-    note_index: dict[str, object] = {}
+    note_index: dict[str, Any] = {}
     for n in part.recurse().notes:
         ed = getattr(n, "editorial", None)
         sid = ed.get("score_note_id") if ed is not None else None
@@ -585,7 +585,7 @@ def _attach_articulations(
             if artic_cls_name is not None:
                 cls = getattr(m21_artic, artic_cls_name)
                 target.articulations.append(cls())
-            else:
+            elif expr_cls_name is not None:
                 cls = getattr(m21_expr, expr_cls_name)
                 target.expressions.append(cls())
             features.articulation_count += 1
