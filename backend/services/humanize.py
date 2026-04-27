@@ -238,9 +238,17 @@ def _humanize_sync(score: PianoScore, seed: int) -> HumanizedPerformance:
         (n.onset_beat + n.duration_beat for n in all_notes),
         default=0.0,
     )
-    pedal = _generate_pedal(
-        meta.chord_symbols, sections, meta.time_signature, fallback_end,
-    )
+    # Phase 6: prefer real transcribed pedal data (Kong) over the
+    # chord-symbol heuristic. ``ScoreMetadata.pedal_events`` is
+    # populated by arrange when the upstream transcriber emitted
+    # pedal CC events; empty-list means we should fall back to the
+    # legacy heuristic generator.
+    if meta.pedal_events:
+        pedal = list(meta.pedal_events)
+    else:
+        pedal = _generate_pedal(
+            meta.chord_symbols, sections, meta.time_signature, fallback_end,
+        )
 
     articulations = (
         _detect_articulations(score.right_hand, "rh")
