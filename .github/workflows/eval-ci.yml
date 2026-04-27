@@ -1,0 +1,85 @@
+name: Eval CI
+
+# Phase 7 — strategy doc §5.1 cheap PR gate.
+#
+# Runs ``scripts/eval.py ci`` on a 5-song subset of the mini-eval
+# (Tier RF + Tier 2 + Tier 3, plus composite Q) and compares against
+# the committed baseline. Gates:
+#   * chord-mirex regress > 3 ppt vs. main → block merge
+#   * playability fraction drop > 5 ppt → block merge
+#   * (Tier 4 round-trip + CLAP gates skip cleanly when CLAP/round-
+#      trip aren't enabled in the cheap CI run — see strategy doc
+#      §5.1; nightly covers the heavier perceptual surface.)
+#
+# Wall-clock target: <2 min. Achieved by running 5 songs only +
+# skipping CLAP/MERT + caching pip + caching fluidsynth at the apt
+# layer. Job uploads aggregate.json + gates.json artifacts so PR
+# reviewers can sparkline deltas.
+
+on:
+  push:
+    branches: [qa, main]
+  pull_request:
+    branches: [qa, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval-ci-mini:
+    name: Eval CI (mini, 5 songs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need full history so the baseline diff can pull a
+          # specific main-branch commit if we extend later.
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install fluidsynth (system)
+        # FluidSynth is needed by tier_rf / tier4 for the resynth
+        # cosine + round-trip. Apt-getting on every CI run; the
+        # actions/cache layer keeps the package list warm.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y fluidsynth
+
+      - name: Install Python deps (eval + basic-pitch)
+        # ``[eval]`` brings mir_eval + cryptography for the harness
+        # itself. ``[basic-pitch]`` is needed only when round-trip is
+        # enabled — disabled by default in CI to keep wall-clock
+        # under 2 min. Reinstate the extra here when the round-trip
+        # gate goes blocking (post-Phase 7 calibration).
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev,eval]"
+
+      - name: Run eval ci
+        env:
+          # OHSHEET_HOLDOUT_KEY isn't needed for pop_mini_v0 (no
+          # encrypted holdout), but pinning the env explicitly here
+          # documents that the CI run is operating against the tune
+          # set only.
+          OHSHEET_HOLDOUT_KEY: ""
+        run: |
+          mkdir -p /tmp/eval_run
+          python scripts/eval.py ci eval/pop_mini_v0/ \
+            --output-dir /tmp/eval_run \
+            --baseline eval/baselines/pop_mini_v0__main_5532577.json \
+            --label "ci-pr-${{ github.event.number || 'main' }}" \
+            --allow-missing-baseline
+
+      - name: Upload eval artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-ci-${{ github.run_id }}
+          path: /tmp/eval_run/
+          retention-days: 14

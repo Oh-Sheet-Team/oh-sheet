@@ -24,8 +24,15 @@ class UploadScreen extends StatefulWidget {
   State<UploadScreen> createState() => _UploadScreenState();
 }
 
+// Phase 8: transcription style. "Faithful" routes through Kong/BP for a
+// note-accurate transcription; "Cover" routes through AMT-APC for an
+// idiomatic piano cover with re-arranged accompaniment patterns. Bound
+// to the ``cover_mode`` flag the backend forwards into PipelineConfig.
+enum _TranscriptionStyle { faithful, cover }
+
 class _UploadScreenState extends State<UploadScreen> {
   _SourceMode _mode = _SourceMode.audio;
+  _TranscriptionStyle _style = _TranscriptionStyle.faithful;
   final _titleController = TextEditingController();
   final _artistController = TextEditingController();
   final _youtubeController = TextEditingController();
@@ -102,6 +109,10 @@ class _UploadScreenState extends State<UploadScreen> {
             artist: _artistController.text.trim().isEmpty
                 ? null
                 : _artistController.text.trim(),
+            // Only forward cover_mode when the user explicitly switched
+            // the style toggle; the backend default (faithful) is the
+            // safer fallback for unmodified clients.
+            coverMode: _style == _TranscriptionStyle.cover ? true : null,
           );
           break;
         case _SourceMode.midi:
@@ -289,6 +300,54 @@ class _UploadScreenState extends State<UploadScreen> {
                                 ),
                               ],
                             ),
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                      ],
+                      // Phase 8: faithful vs. cover toggle. Only meaningful for
+                      // audio uploads — AMT-APC needs a waveform, so MIDI / title /
+                      // YouTube paths skip it. Default to faithful: most users
+                      // submitting a song want a transcription, not a re-arrangement.
+                      if (_mode == _SourceMode.audio) ...[
+                        const Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            'Style',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                              color: OhSheetColors.mutedText,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        SegmentedButton<_TranscriptionStyle>(
+                          segments: const [
+                            ButtonSegment(
+                              value: _TranscriptionStyle.faithful,
+                              label: Text('Faithful'),
+                              icon: Icon(Icons.music_note),
+                            ),
+                            ButtonSegment(
+                              value: _TranscriptionStyle.cover,
+                              label: Text('Piano cover'),
+                              icon: Icon(Icons.piano),
+                            ),
+                          ],
+                          selected: {_style},
+                          onSelectionChanged: _submitting
+                              ? null
+                              : (s) => setState(() => _style = s.first),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          _style == _TranscriptionStyle.faithful
+                              ? 'Note-accurate transcription with pedal markings.'
+                              : 'Idiomatic piano cover (rearranged accompaniment).',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: OhSheetColors.mutedText,
+                            fontWeight: FontWeight.w500,
                           ),
                         ),
                         const SizedBox(height: 18),

@@ -41,7 +41,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install -e ".[dev]"
+      - name: Install fluidsynth (system)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y fluidsynth
+      - run: pip install -e ".[dev,eval]"
       - run: pytest
       - name: Upload coverage report
         if: always()

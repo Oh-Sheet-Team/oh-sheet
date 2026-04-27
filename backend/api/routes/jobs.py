@@ -55,6 +55,12 @@ class JobCreateRequest(BaseModel):
 
     skip_humanizer: bool = False
     difficulty: Difficulty = "intermediate"
+    # Phase 8: cover-mode toggle. When True on an audio_upload job, the
+    # API picks the ``pop_cover`` :class:`PipelineVariant` so transcribe
+    # routes through AMT-APC (idiomatic piano cover) instead of the
+    # faithful Kong/BP path. Ignored on midi_upload / title_lookup
+    # because AMT-APC needs an audio waveform to operate on.
+    cover_mode: bool = False
 
 
 class JobSummary(BaseModel):
@@ -137,32 +143,44 @@ async def create_job(
     # Build InputMetadata once — prefer_clean_source is threaded through
     # every variant so uploads can theoretically opt in too (the ingest
     # stage just ignores it when audio is already present).
-    source_filename = None
+    source_filename: str | None = None
     if body.audio is not None:
         source_filename = body.audio.source_filename
     elif body.midi is not None:
         source_filename = body.midi.source_filename
-    metadata_kwargs = {
-        "title": body.title,
-        "artist": body.artist,
-        "source_filename": source_filename,
-        "prefer_clean_source": body.prefer_clean_source,
-    }
 
     if body.audio is not None:
+        # Phase 8: cover_mode flips the variant from audio_upload to
+        # pop_cover. The bundle's ``variant_hint`` propagates the choice
+        # through the InputBundle → JSON → transcribe-worker boundary so
+        # the dispatcher in TranscribeService picks AMT-APC.
+        variant: PipelineVariant = "pop_cover" if body.cover_mode else "audio_upload"
         bundle = InputBundle(
             schema_version=SCHEMA_VERSION,
             audio=body.audio,
             midi=None,
-            metadata=InputMetadata(source="audio_upload", **metadata_kwargs),
+            metadata=InputMetadata(
+                source="audio_upload",
+                title=body.title,
+                artist=body.artist,
+                source_filename=source_filename,
+                prefer_clean_source=body.prefer_clean_source,
+                variant_hint=variant,
+            ),
         )
-        variant: PipelineVariant = "audio_upload"
     elif body.midi is not None:
         bundle = InputBundle(
             schema_version=SCHEMA_VERSION,
             audio=None,
             midi=body.midi,
-            metadata=InputMetadata(source="midi_upload", **metadata_kwargs),
+            metadata=InputMetadata(
+                source="midi_upload",
+                title=body.title,
+                artist=body.artist,
+                source_filename=source_filename,
+                prefer_clean_source=body.prefer_clean_source,
+                variant_hint="midi_upload",
+            ),
         )
         variant = "midi_upload"
     else:
@@ -171,7 +189,14 @@ async def create_job(
             schema_version=SCHEMA_VERSION,
             audio=None,
             midi=None,
-            metadata=InputMetadata(source="title_lookup", **metadata_kwargs),
+            metadata=InputMetadata(
+                source="title_lookup",
+                title=body.title,
+                artist=body.artist,
+                source_filename=source_filename,
+                prefer_clean_source=body.prefer_clean_source,
+                variant_hint="full",
+            ),
         )
         variant = "full"
 
